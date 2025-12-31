@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net"
 	"net/smtp"
+	"strings"
 	"time"
 )
 
@@ -88,7 +89,9 @@ func testIMAPConnectionInternal(addr, username, password string, useSSL bool) Co
 	}
 
 	response := string(buf[:n])
-	if len(response) >= 6 && response[:6] == "A001 OK" {
+	// Check if response contains "A001 OK" - indicates successful login
+	// Response format: "A001 OK LOGIN completed" or similar
+	if strings.Contains(response, "A001 OK") {
 		// Logout
 		conn.Write([]byte("A002 LOGOUT\r\n"))
 		return ConnectionTestResult{
@@ -97,9 +100,17 @@ func testIMAPConnectionInternal(addr, username, password string, useSSL bool) Co
 		}
 	}
 
+	// Check for explicit failure responses
+	if strings.Contains(response, "A001 NO") || strings.Contains(response, "A001 BAD") {
+		return ConnectionTestResult{
+			Success: false,
+			Message: "IMAP authentication failed: " + strings.TrimSpace(response),
+		}
+	}
+
 	return ConnectionTestResult{
 		Success: false,
-		Message: "IMAP authentication failed: " + response,
+		Message: "IMAP authentication failed: " + strings.TrimSpace(response),
 	}
 }
 
