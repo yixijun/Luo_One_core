@@ -41,6 +41,7 @@ type SendEmailRequest struct {
 // SyncRequest represents the request to sync emails
 type SyncRequest struct {
 	AccountID uint `json:"account_id" binding:"required"`
+	Days      int  `json:"days"` // Number of days to fetch emails from (0 = use last sync time or default 30 days)
 }
 
 // EmailResponse represents the response for an email
@@ -480,7 +481,7 @@ func (h *EmailHandler) SyncEmails(c *gin.Context) {
 		return
 	}
 
-	savedCount, err := h.emailService.SyncAndSaveEmails(userID, req.AccountID)
+	savedCount, err := h.emailService.SyncAndSaveEmailsWithDays(userID, req.AccountID, req.Days)
 	if err != nil {
 		if err == services.ErrAccountNotFound {
 			c.JSON(http.StatusNotFound, gin.H{

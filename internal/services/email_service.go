@@ -125,6 +125,11 @@ func (s *EmailService) connectIMAP(account *models.EmailAccount) (*client.Client
 
 // FetchNewEmails fetches new emails from an account since the last sync
 func (s *EmailService) FetchNewEmails(userID, accountID uint) ([]FetchedEmail, error) {
+	return s.FetchNewEmailsWithDays(userID, accountID, 0)
+}
+
+// FetchNewEmailsWithDays fetches emails from an account within specified days (0 means use last sync time or default 30 days)
+func (s *EmailService) FetchNewEmailsWithDays(userID, accountID uint, days int) ([]FetchedEmail, error) {
 	account, err := s.accountService.GetAccountByIDAndUserID(accountID, userID)
 	if err != nil {
 		return nil, err
@@ -150,31 +155,63 @@ func (s *EmailService) FetchNewEmails(userID, accountID uint) ([]FetchedEmail, e
 		return nil, fmt.Errorf("failed to select INBOX: %v", err)
 	}
 
+	s.logService.LogInfo(userID, models.LogModuleEmail, "fetch", "INBOX selected", map[string]interface{}{
+		"account_id":     accountID,
+		"total_messages": mbox.Messages,
+		"last_sync_at":   account.LastSyncAt,
+		"fetch_days":     days,
+	})
+
 	if mbox.Messages == 0 {
 		return []FetchedEmail{}, nil
 	}
 
-	// Determine which messages to fetch (new ones since last sync)
 	var seqSet *imap.SeqSet
-	if account.LastSyncAt.IsZero() {
-		// First sync: fetch last 50 messages
-		from := uint32(1)
-		if mbox.Messages > 50 {
-			from = mbox.Messages - 49
-		}
+	
+	if days == -1 {
+		// Fetch all emails
 		seqSet = new(imap.SeqSet)
-		seqSet.AddRange(from, mbox.Messages)
+		seqSet.AddRange(1, mbox.Messages)
+		s.logService.LogInfo(userID, models.LogModuleEmail, "fetch", "Fetching all emails", map[string]interface{}{
+			"total": mbox.Messages,
+		})
 	} else {
-		// Fetch messages since last sync using SEARCH
+		// Determine the search criteria
 		criteria := imap.NewSearchCriteria()
-		criteria.Since = account.LastSyncAt
+		
+		if days > 0 {
+			// Use specified days
+			criteria.Since = time.Now().AddDate(0, 0, -days)
+			s.logService.LogInfo(userID, models.LogModuleEmail, "fetch", "Fetching emails by days", map[string]interface{}{
+				"days":  days,
+				"since": criteria.Since,
+			})
+		} else if !account.LastSyncAt.IsZero() {
+			// Use last sync time
+			criteria.Since = account.LastSyncAt
+		} else {
+			// First sync: default to last 30 days
+			criteria.Since = time.Now().AddDate(0, 0, -30)
+			s.logService.LogInfo(userID, models.LogModuleEmail, "fetch", "First sync, using default 30 days", map[string]interface{}{
+				"since": criteria.Since,
+			})
+		}
+
+		// Search for messages
 		uids, err := c.Search(criteria)
 		if err != nil {
 			return nil, fmt.Errorf("failed to search messages: %v", err)
 		}
+		
+		s.logService.LogInfo(userID, models.LogModuleEmail, "fetch", "Search completed", map[string]interface{}{
+			"since":      criteria.Since,
+			"found_uids": len(uids),
+		})
+		
 		if len(uids) == 0 {
 			return []FetchedEmail{}, nil
 		}
+		
 		seqSet = new(imap.SeqSet)
 		seqSet.AddNum(uids...)
 	}
@@ -189,9 +226,11 @@ func (s *EmailService) FetchNewEmails(userID, accountID uint) ([]FetchedEmail, e
 	}()
 
 	var fetchedEmails []FetchedEmail
+	var parseErrors int
 	for msg := range messages {
 		email, err := s.parseIMAPMessage(msg)
 		if err != nil {
+			parseErrors++
 			continue // Skip messages that fail to parse
 		}
 		fetchedEmails = append(fetchedEmails, email)
@@ -200,6 +239,12 @@ func (s *EmailService) FetchNewEmails(userID, accountID uint) ([]FetchedEmail, e
 	if err := <-done; err != nil {
 		return nil, fmt.Errorf("failed to fetch messages: %v", err)
 	}
+
+	s.logService.LogInfo(userID, models.LogModuleEmail, "fetch", "Fetch completed", map[string]interface{}{
+		"account_id":     accountID,
+		"fetched_count":  len(fetchedEmails),
+		"parse_errors":   parseErrors,
+	})
 
 	return fetchedEmails, nil
 }
@@ -315,13 +360,18 @@ func hasAttachments(bs *imap.BodyStructure) bool {
 
 // SyncAndSaveEmails fetches new emails and saves them to the database and file system
 func (s *EmailService) SyncAndSaveEmails(userID, accountID uint) (int, error) {
+	return s.SyncAndSaveEmailsWithDays(userID, accountID, 0)
+}
+
+// SyncAndSaveEmailsWithDays fetches emails within specified days and saves them
+func (s *EmailService) SyncAndSaveEmailsWithDays(userID, accountID uint, days int) (int, error) {
 	// Ensure account directories exist
 	if err := s.userManager.CreateAccountDirectories(userID, accountID); err != nil {
 		return 0, err
 	}
 
 	// Fetch new emails
-	fetchedEmails, err := s.FetchNewEmails(userID, accountID)
+	fetchedEmails, err := s.FetchNewEmailsWithDays(userID, accountID, days)
 	if err != nil {
 		return 0, err
 	}
