@@ -175,29 +175,40 @@ func (s *EmailService) FetchNewEmailsWithDays(userID, accountID uint, days int) 
 		s.logService.LogInfo(userID, models.LogModuleEmail, "fetch", "Fetching all emails", map[string]interface{}{
 			"total": mbox.Messages,
 		})
-	} else {
-		// Determine the search criteria
-		criteria := imap.NewSearchCriteria()
-		
-		if days > 0 {
-			// Use specified days
-			criteria.Since = time.Now().AddDate(0, 0, -days)
-			s.logService.LogInfo(userID, models.LogModuleEmail, "fetch", "Fetching emails by days", map[string]interface{}{
-				"days":  days,
-				"since": criteria.Since,
-			})
-		} else if !account.LastSyncAt.IsZero() {
-			// Use last sync time
+	} else if days == 0 {
+		// Incremental sync: use last sync time, or fetch all if never synced
+		if !account.LastSyncAt.IsZero() {
+			criteria := imap.NewSearchCriteria()
 			criteria.Since = account.LastSyncAt
+			uids, err := c.Search(criteria)
+			if err != nil {
+				return nil, fmt.Errorf("failed to search messages: %v", err)
+			}
+			s.logService.LogInfo(userID, models.LogModuleEmail, "fetch", "Incremental sync", map[string]interface{}{
+				"since":      account.LastSyncAt,
+				"found_uids": len(uids),
+			})
+			if len(uids) == 0 {
+				return []FetchedEmail{}, nil
+			}
+			seqSet = new(imap.SeqSet)
+			seqSet.AddNum(uids...)
 		} else {
-			// First sync: default to last 30 days
-			criteria.Since = time.Now().AddDate(0, 0, -30)
-			s.logService.LogInfo(userID, models.LogModuleEmail, "fetch", "First sync, using default 30 days", map[string]interface{}{
-				"since": criteria.Since,
+			// Never synced before, fetch all
+			seqSet = new(imap.SeqSet)
+			seqSet.AddRange(1, mbox.Messages)
+			s.logService.LogInfo(userID, models.LogModuleEmail, "fetch", "First sync, fetching all emails", map[string]interface{}{
+				"total": mbox.Messages,
 			})
 		}
-
-		// Search for messages
+	} else {
+		// Fetch emails from specified days
+		criteria := imap.NewSearchCriteria()
+		criteria.Since = time.Now().AddDate(0, 0, -days)
+		s.logService.LogInfo(userID, models.LogModuleEmail, "fetch", "Fetching emails by days", map[string]interface{}{
+			"days":  days,
+			"since": criteria.Since,
+		})
 		uids, err := c.Search(criteria)
 		if err != nil {
 			return nil, fmt.Errorf("failed to search messages: %v", err)
