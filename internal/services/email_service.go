@@ -359,8 +359,14 @@ func hasAttachments(bs *imap.BodyStructure) bool {
 
 
 // SyncAndSaveEmails fetches new emails and saves them to the database and file system
+// Uses the account's configured sync_days setting
 func (s *EmailService) SyncAndSaveEmails(userID, accountID uint) (int, error) {
-	return s.SyncAndSaveEmailsWithDays(userID, accountID, 0)
+	// Get account to read sync_days setting
+	account, err := s.accountService.GetAccountByIDAndUserID(accountID, userID)
+	if err != nil {
+		return 0, err
+	}
+	return s.SyncAndSaveEmailsWithDays(userID, accountID, account.SyncDays)
 }
 
 // SyncAndSaveEmailsWithDays fetches emails within specified days and saves them
