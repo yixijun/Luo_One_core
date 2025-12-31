@@ -15,6 +15,7 @@ import (
 
 	"github.com/emersion/go-imap"
 	"github.com/emersion/go-imap/client"
+	id "github.com/emersion/go-imap-id"
 	"github.com/emersion/go-message"
 	_ "github.com/emersion/go-message/charset"
 	"github.com/luo-one/core/internal/database/models"
@@ -98,6 +99,20 @@ func (s *EmailService) connectIMAP(account *models.EmailAccount) (*client.Client
 
 	if err != nil {
 		return nil, fmt.Errorf("%w: %v", ErrIMAPConnectionFailed, err)
+	}
+
+	// Send IMAP ID command for servers that require client identification (e.g., 188.com, 163.com)
+	// This must be done before login for some email providers
+	if ok, _ := c.Support("ID"); ok {
+		idClient := id.NewClient(c)
+		_, err = idClient.ID(id.ID{
+			id.FieldName:    "Luo One",
+			id.FieldVersion: "1.0.0",
+			id.FieldVendor:  "Luo One",
+		})
+		if err != nil {
+			// Log but don't fail - some servers may not require ID
+		}
 	}
 
 	if err := c.Login(account.Username, password); err != nil {
