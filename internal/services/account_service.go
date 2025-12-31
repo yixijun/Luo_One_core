@@ -349,6 +349,45 @@ func (s *AccountService) TestConnectionByID(id, userID uint) (ConnectionTestResu
 	return s.TestConnection(account), nil
 }
 
+// TestConnectionInput represents the input for testing a connection without saving
+type TestConnectionInput struct {
+	IMAPHost string
+	IMAPPort int
+	SMTPHost string
+	SMTPPort int
+	Username string
+	Password string
+	UseSSL   bool
+}
+
+// TestConnectionDirect tests the connection with provided credentials (without saving)
+func (s *AccountService) TestConnectionDirect(input TestConnectionInput) ConnectionTestResult {
+	// Test IMAP first
+	imapAddr := buildAddress(input.IMAPHost, input.IMAPPort)
+	imapResult := testIMAPConnectionInternal(imapAddr, input.Username, input.Password, input.UseSSL)
+	if !imapResult.Success {
+		return ConnectionTestResult{
+			Success: false,
+			Message: "IMAP connection failed: " + imapResult.Message,
+		}
+	}
+
+	// Test SMTP
+	smtpAddr := buildAddress(input.SMTPHost, input.SMTPPort)
+	smtpResult := testSMTPConnectionInternal(smtpAddr, input.Username, input.Password, input.UseSSL)
+	if !smtpResult.Success {
+		return ConnectionTestResult{
+			Success: false,
+			Message: "SMTP connection failed: " + smtpResult.Message,
+		}
+	}
+
+	return ConnectionTestResult{
+		Success: true,
+		Message: "Both IMAP and SMTP connections successful",
+	}
+}
+
 
 // SetAccountEnabled sets the enabled status of an account
 func (s *AccountService) SetAccountEnabled(id, userID uint, enabled bool) (*models.EmailAccount, error) {

@@ -437,6 +437,63 @@ func (h *AccountHandler) TestConnection(c *gin.Context) {
 	})
 }
 
+// TestConnectionDirectRequest represents the request to test connection without saving
+type TestConnectionDirectRequest struct {
+	IMAPHost string `json:"imap_host" binding:"required"`
+	IMAPPort int    `json:"imap_port" binding:"required"`
+	SMTPHost string `json:"smtp_host" binding:"required"`
+	SMTPPort int    `json:"smtp_port" binding:"required"`
+	Username string `json:"username" binding:"required"`
+	Password string `json:"password" binding:"required"`
+	UseSSL   bool   `json:"use_ssl"`
+}
+
+// TestConnectionDirect tests the connection without saving the account
+// POST /api/accounts/test
+func (h *AccountHandler) TestConnectionDirect(c *gin.Context) {
+	_, exists := middleware.GetUserIDFromContext(c)
+	if !exists {
+		c.JSON(http.StatusUnauthorized, gin.H{
+			"success": false,
+			"error": gin.H{
+				"code":    "AUTH_FAILED",
+				"message": "User not authenticated",
+			},
+		})
+		return
+	}
+
+	var req TestConnectionDirectRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"success": false,
+			"error": gin.H{
+				"code":    "VALIDATION_ERROR",
+				"message": "Invalid request body",
+				"details": err.Error(),
+			},
+		})
+		return
+	}
+
+	input := services.TestConnectionInput{
+		IMAPHost: req.IMAPHost,
+		IMAPPort: req.IMAPPort,
+		SMTPHost: req.SMTPHost,
+		SMTPPort: req.SMTPPort,
+		Username: req.Username,
+		Password: req.Password,
+		UseSSL:   req.UseSSL,
+	}
+
+	result := h.accountService.TestConnectionDirect(input)
+
+	c.JSON(http.StatusOK, gin.H{
+		"success": true,
+		"data":    result,
+	})
+}
+
 // EnableAccount enables an email account
 // PUT /api/accounts/:id/enable
 func (h *AccountHandler) EnableAccount(c *gin.Context) {
