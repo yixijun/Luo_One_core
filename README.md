@@ -81,6 +81,9 @@ go build -o luo_one_core ./cmd/main.go
 ### CLI 命令
 
 ```bash
+# 启动服务器
+./luo_one_core serve
+
 # 查看 API 密钥
 ./luo_one_core key show
 

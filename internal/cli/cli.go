@@ -2,8 +2,10 @@ package cli
 
 import (
 	"fmt"
+	"log"
 	"os"
 
+	"github.com/luo-one/core/internal/api"
 	"github.com/luo-one/core/internal/api/middleware"
 	"github.com/luo-one/core/internal/config"
 	"github.com/luo-one/core/internal/services"
@@ -26,15 +28,39 @@ var rootCmd = &cobra.Command{
 	Long: `洛一 (Luo One) 是一个前后端分离的多邮箱管理系统后端服务。
 
 该命令行工具提供以下功能：
+  - serve：启动 API 服务器
   - 密钥管理：查看和重置 API 密钥
   - 用户管理：创建用户、列出用户、重置用户密码
 
 使用示例：
+  luo_one_core serve             # 启动 API 服务器
   luo_one_core key show          # 显示当前 API 密钥
   luo_one_core key reset         # 重置 API 密钥
   luo_one_core user create       # 创建新用户
   luo_one_core user list         # 列出所有用户
   luo_one_core user reset-pwd    # 重置用户密码`,
+}
+
+// serveCmd starts the API server
+var serveCmd = &cobra.Command{
+	Use:   "serve",
+	Short: "启动 API 服务器",
+	Long:  `启动洛一邮箱管理系统的 API 服务器。`,
+	Run: func(cmd *cobra.Command, args []string) {
+		// Start API server
+		router, authManager, err := api.SetupRouter(db, cfg)
+		if err != nil {
+			log.Fatalf("Failed to setup router: %v", err)
+		}
+
+		log.Printf("Starting Luo One server on port %s", cfg.APIPort)
+		log.Printf("Data directory: %s", cfg.DataDir)
+		log.Printf("Database path: %s", cfg.DatabasePath)
+		log.Printf("API Key: %s", authManager.APIKeyManager.GetCurrentKey())
+		if err := router.Run(":" + cfg.APIPort); err != nil {
+			log.Fatalf("Failed to start server: %v", err)
+		}
+	},
 }
 
 // Execute runs the CLI with the provided database and config
@@ -61,6 +87,7 @@ func Execute(database *gorm.DB, config *config.Config) {
 
 func init() {
 	// Add subcommands
+	rootCmd.AddCommand(serveCmd)
 	rootCmd.AddCommand(keyCmd)
 	rootCmd.AddCommand(userCmd)
 }
