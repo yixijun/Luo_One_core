@@ -539,18 +539,28 @@ func (s *EmailService) MarkEmailAsRead(id, userID uint) error {
 	return s.db.Model(email).Update("is_read", true).Error
 }
 
-// DeleteEmail deletes an email
+// DeleteEmail deletes an email permanently
 func (s *EmailService) DeleteEmail(id, userID uint) error {
-	email, err := s.GetEmailByIDAndUserID(id, userID)
+	// Verify user owns the email first
+	_, err := s.GetEmailByIDAndUserID(id, userID)
 	if err != nil {
 		return err
 	}
 
-	// Delete processed result if exists
-	s.db.Where("email_id = ?", id).Delete(&models.ProcessedResult{})
+	// Use transaction to ensure both deletions succeed or fail together
+	return s.db.Transaction(func(tx *gorm.DB) error {
+		// Delete processed result if exists (hard delete)
+		if err := tx.Unscoped().Where("email_id = ?", id).Delete(&models.ProcessedResult{}).Error; err != nil {
+			return err
+		}
 
-	// Delete email record
-	return s.db.Delete(email).Error
+		// Delete email record (hard delete by ID)
+		if err := tx.Unscoped().Delete(&models.Email{}, id).Error; err != nil {
+			return err
+		}
+
+		return nil
+	})
 }
 
 
