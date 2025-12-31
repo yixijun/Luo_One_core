@@ -40,14 +40,21 @@ func Initialize(dbPath string) (*gorm.DB, error) {
 // runMigrations runs all database migrations
 func runMigrations(db *gorm.DB) error {
 	// Auto-migrate all models
-	return db.AutoMigrate(
+	if err := db.AutoMigrate(
 		&models.User{},
 		&models.UserSettings{},
 		&models.EmailAccount{},
 		&models.Email{},
 		&models.ProcessedResult{},
 		&models.Log{},
-	)
+	); err != nil {
+		return err
+	}
+
+	// Update existing emails with empty folder to 'inbox'
+	db.Model(&models.Email{}).Where("folder = '' OR folder IS NULL").Update("folder", models.FolderInbox)
+
+	return nil
 }
 
 // GetDB returns the database instance (for testing purposes)

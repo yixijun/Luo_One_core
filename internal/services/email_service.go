@@ -344,6 +344,7 @@ func (s *EmailService) SyncAndSaveEmails(userID, accountID uint) (int, error) {
 			HTMLBody:       fetched.HTMLBody,
 			HasAttachments: fetched.HasAttachments,
 			IsRead:         false,
+			Folder:         models.FolderInbox,
 			RawFilePath:    rawFilePath,
 		}
 
@@ -664,6 +665,23 @@ func (s *EmailService) SendEmail(userID uint, req SendEmailRequest) (*SendEmailR
 		"subject":    req.Subject,
 		"message_id": messageID,
 	})
+
+	// Save sent email to database
+	toAddrsJSON, _ := json.Marshal(req.To)
+	sentEmail := &models.Email{
+		AccountID:      req.AccountID,
+		MessageID:      messageID,
+		Subject:        req.Subject,
+		FromAddr:       account.Email,
+		ToAddrs:        string(toAddrsJSON),
+		Date:           time.Now(),
+		Body:           req.Body,
+		HTMLBody:       req.HTMLBody,
+		HasAttachments: len(req.Attachments) > 0,
+		IsRead:         true,
+		Folder:         models.FolderSent,
+	}
+	s.db.Create(sentEmail)
 
 	return &SendEmailResult{
 		Success:   true,
