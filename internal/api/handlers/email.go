@@ -56,6 +56,7 @@ type EmailResponse struct {
 	HTMLBody        string                   `json:"html_body"`
 	HasAttachments  bool                     `json:"has_attachments"`
 	IsRead          bool                     `json:"is_read"`
+	Folder          string                   `json:"folder"`
 	ProcessedResult *ProcessedResultResponse `json:"processed_result,omitempty"`
 }
 
@@ -77,6 +78,12 @@ func toEmailResponse(email *models.Email) EmailResponse {
 		json.Unmarshal([]byte(email.ToAddrs), &toAddrs)
 	}
 
+	// Default folder to inbox if empty
+	folder := email.Folder
+	if folder == "" {
+		folder = "inbox"
+	}
+
 	response := EmailResponse{
 		ID:             email.ID,
 		AccountID:      email.AccountID,
@@ -89,6 +96,7 @@ func toEmailResponse(email *models.Email) EmailResponse {
 		HTMLBody:       email.HTMLBody,
 		HasAttachments: email.HasAttachments,
 		IsRead:         email.IsRead,
+		Folder:         folder,
 	}
 
 	if email.ProcessedResult != nil {
@@ -127,9 +135,11 @@ func (h *EmailHandler) ListEmails(c *gin.Context) {
 	sortBy := c.DefaultQuery("sort", "date")
 	sortOrder := c.DefaultQuery("order", "desc")
 	search := c.Query("search")
+	folder := c.DefaultQuery("folder", "inbox") // inbox, sent, trash, all
 
 	opts := services.EmailListOptions{
 		AccountID: uint(accountID),
+		Folder:    folder,
 		Page:      page,
 		Limit:     limit,
 		SortBy:    sortBy,

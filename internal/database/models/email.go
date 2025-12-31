@@ -4,6 +4,14 @@ import (
 	"time"
 )
 
+// Email folder types
+const (
+	FolderInbox   = "inbox"
+	FolderSent    = "sent"
+	FolderTrash   = "trash"
+	FolderDrafts  = "drafts"
+)
+
 // Email represents an email message
 type Email struct {
 	ID             uint      `gorm:"primaryKey" json:"id"`
@@ -17,6 +25,7 @@ type Email struct {
 	HTMLBody       string    `gorm:"type:text" json:"html_body"`
 	HasAttachments bool      `gorm:"default:false" json:"has_attachments"`
 	IsRead         bool      `gorm:"default:false" json:"is_read"`
+	Folder         string    `gorm:"size:50;default:'inbox';index" json:"folder"` // inbox, sent, trash, drafts
 	RawFilePath    string    `gorm:"size:500" json:"raw_file_path"`
 	CreatedAt      time.Time `json:"created_at"`
 

@@ -417,6 +417,7 @@ func (s *EmailService) GetEmailByIDAndUserID(id, userID uint) (*models.Email, er
 // EmailListOptions represents options for listing emails
 type EmailListOptions struct {
 	AccountID uint
+	Folder    string // inbox, sent, trash, all
 	Page      int
 	Limit     int
 	SortBy    string // "date" or "from"
@@ -484,6 +485,11 @@ func (s *EmailService) ListEmails(userID uint, opts EmailListOptions) (*EmailLis
 		}
 	}
 
+	// Filter by folder
+	if opts.Folder != "" && opts.Folder != "all" {
+		query = query.Where("folder = ?", opts.Folder)
+	}
+
 	// Search filter
 	if opts.Search != "" {
 		searchPattern := "%" + opts.Search + "%"
@@ -539,12 +545,28 @@ func (s *EmailService) MarkEmailAsRead(id, userID uint) error {
 	return s.db.Model(email).Update("is_read", true).Error
 }
 
-// DeleteEmail deletes an email permanently
-func (s *EmailService) DeleteEmail(id, userID uint) error {
-	// Verify user owns the email first
-	_, err := s.GetEmailByIDAndUserID(id, userID)
+// MoveToTrash moves an email to trash folder
+func (s *EmailService) MoveToTrash(id, userID uint) error {
+	email, err := s.GetEmailByIDAndUserID(id, userID)
 	if err != nil {
 		return err
+	}
+
+	return s.db.Model(email).Update("folder", models.FolderTrash).Error
+}
+
+// DeleteEmail permanently deletes an email (only from trash)
+func (s *EmailService) DeleteEmail(id, userID uint) error {
+	// Verify user owns the email first
+	email, err := s.GetEmailByIDAndUserID(id, userID)
+	if err != nil {
+		return err
+	}
+
+	// Only allow permanent deletion from trash
+	if email.Folder != models.FolderTrash {
+		// If not in trash, move to trash instead
+		return s.db.Model(email).Update("folder", models.FolderTrash).Error
 	}
 
 	// Use transaction to ensure both deletions succeed or fail together
