@@ -1982,14 +1982,21 @@ func (s *EmailService) DeleteEmail(id, userID uint) error {
 
 // SendEmailRequest represents a request to send an email
 type SendEmailRequest struct {
-	AccountID   uint     `json:"account_id"`
-	To          []string `json:"to"`
-	Cc          []string `json:"cc"`
-	Bcc         []string `json:"bcc"`
-	Subject     string   `json:"subject"`
-	Body        string   `json:"body"`
-	HTMLBody    string   `json:"html_body"`
-	Attachments []string `json:"attachments"` // Attachment filenames
+	AccountID   uint              `json:"account_id"`
+	To          []string          `json:"to"`
+	Cc          []string          `json:"cc"`
+	Bcc         []string          `json:"bcc"`
+	Subject     string            `json:"subject"`
+	Body        string            `json:"body"`
+	HTMLBody    string            `json:"html_body"`
+	Attachments []AttachmentData  `json:"attachments"`
+}
+
+// AttachmentData represents attachment data for sending
+type AttachmentData struct {
+	Filename    string `json:"filename"`
+	Content     string `json:"content"`      // Base64 encoded content
+	ContentType string `json:"content_type"`
 }
 
 // SendEmailResult represents the result of sending an email
@@ -2092,13 +2099,75 @@ func (s *EmailService) buildEmailContent(account *models.EmailAccount, req SendE
 	if len(req.Cc) > 0 {
 		buf.WriteString(fmt.Sprintf("Cc: %s\r\n", strings.Join(req.Cc, ", ")))
 	}
-	buf.WriteString(fmt.Sprintf("Subject: %s\r\n", req.Subject))
+	buf.WriteString(fmt.Sprintf("Subject: =?UTF-8?B?%s?=\r\n", base64.StdEncoding.EncodeToString([]byte(req.Subject))))
 	buf.WriteString(fmt.Sprintf("Message-ID: %s\r\n", messageID))
 	buf.WriteString(fmt.Sprintf("Date: %s\r\n", time.Now().Format(time.RFC1123Z)))
 	buf.WriteString("MIME-Version: 1.0\r\n")
 
-	if req.HTMLBody != "" {
-		// Multipart message with both plain text and HTML
+	hasAttachments := len(req.Attachments) > 0
+
+	if hasAttachments {
+		// Multipart mixed for attachments
+		mixedBoundary := generateBoundary()
+		buf.WriteString(fmt.Sprintf("Content-Type: multipart/mixed; boundary=\"%s\"\r\n", mixedBoundary))
+		buf.WriteString("\r\n")
+
+		// Text/HTML part
+		buf.WriteString(fmt.Sprintf("--%s\r\n", mixedBoundary))
+		
+		if req.HTMLBody != "" {
+			// Multipart alternative for text and HTML
+			altBoundary := generateBoundary()
+			buf.WriteString(fmt.Sprintf("Content-Type: multipart/alternative; boundary=\"%s\"\r\n", altBoundary))
+			buf.WriteString("\r\n")
+
+			// Plain text part
+			buf.WriteString(fmt.Sprintf("--%s\r\n", altBoundary))
+			buf.WriteString("Content-Type: text/plain; charset=utf-8\r\n")
+			buf.WriteString("Content-Transfer-Encoding: base64\r\n")
+			buf.WriteString("\r\n")
+			buf.WriteString(base64.StdEncoding.EncodeToString([]byte(req.Body)))
+			buf.WriteString("\r\n")
+
+			// HTML part
+			buf.WriteString(fmt.Sprintf("--%s\r\n", altBoundary))
+			buf.WriteString("Content-Type: text/html; charset=utf-8\r\n")
+			buf.WriteString("Content-Transfer-Encoding: base64\r\n")
+			buf.WriteString("\r\n")
+			buf.WriteString(base64.StdEncoding.EncodeToString([]byte(req.HTMLBody)))
+			buf.WriteString("\r\n")
+
+			buf.WriteString(fmt.Sprintf("--%s--\r\n", altBoundary))
+		} else {
+			// Plain text only
+			buf.WriteString("Content-Type: text/plain; charset=utf-8\r\n")
+			buf.WriteString("Content-Transfer-Encoding: base64\r\n")
+			buf.WriteString("\r\n")
+			buf.WriteString(base64.StdEncoding.EncodeToString([]byte(req.Body)))
+			buf.WriteString("\r\n")
+		}
+
+		// Attachments
+		for _, att := range req.Attachments {
+			buf.WriteString(fmt.Sprintf("--%s\r\n", mixedBoundary))
+			contentType := att.ContentType
+			if contentType == "" {
+				contentType = "application/octet-stream"
+			}
+			// Encode filename for non-ASCII characters
+			encodedFilename := fmt.Sprintf("=?UTF-8?B?%s?=", base64.StdEncoding.EncodeToString([]byte(att.Filename)))
+			buf.WriteString(fmt.Sprintf("Content-Type: %s; name=\"%s\"\r\n", contentType, encodedFilename))
+			buf.WriteString("Content-Transfer-Encoding: base64\r\n")
+			buf.WriteString(fmt.Sprintf("Content-Disposition: attachment; filename=\"%s\"\r\n", encodedFilename))
+			buf.WriteString("\r\n")
+			// Content is already base64 encoded from frontend
+			buf.WriteString(att.Content)
+			buf.WriteString("\r\n")
+		}
+
+		buf.WriteString(fmt.Sprintf("--%s--\r\n", mixedBoundary))
+	} else if req.HTMLBody != "" {
+		// Multipart message with both plain text and HTML (no attachments)
 		boundary := generateBoundary()
 		buf.WriteString(fmt.Sprintf("Content-Type: multipart/alternative; boundary=\"%s\"\r\n", boundary))
 		buf.WriteString("\r\n")
@@ -2106,25 +2175,26 @@ func (s *EmailService) buildEmailContent(account *models.EmailAccount, req SendE
 		// Plain text part
 		buf.WriteString(fmt.Sprintf("--%s\r\n", boundary))
 		buf.WriteString("Content-Type: text/plain; charset=utf-8\r\n")
-		buf.WriteString("Content-Transfer-Encoding: quoted-printable\r\n")
+		buf.WriteString("Content-Transfer-Encoding: base64\r\n")
 		buf.WriteString("\r\n")
-		buf.WriteString(req.Body)
+		buf.WriteString(base64.StdEncoding.EncodeToString([]byte(req.Body)))
 		buf.WriteString("\r\n")
 
 		// HTML part
 		buf.WriteString(fmt.Sprintf("--%s\r\n", boundary))
 		buf.WriteString("Content-Type: text/html; charset=utf-8\r\n")
-		buf.WriteString("Content-Transfer-Encoding: quoted-printable\r\n")
+		buf.WriteString("Content-Transfer-Encoding: base64\r\n")
 		buf.WriteString("\r\n")
-		buf.WriteString(req.HTMLBody)
+		buf.WriteString(base64.StdEncoding.EncodeToString([]byte(req.HTMLBody)))
 		buf.WriteString("\r\n")
 
 		buf.WriteString(fmt.Sprintf("--%s--\r\n", boundary))
 	} else {
 		// Plain text only
 		buf.WriteString("Content-Type: text/plain; charset=utf-8\r\n")
+		buf.WriteString("Content-Transfer-Encoding: base64\r\n")
 		buf.WriteString("\r\n")
-		buf.WriteString(req.Body)
+		buf.WriteString(base64.StdEncoding.EncodeToString([]byte(req.Body)))
 	}
 
 	return buf.String()

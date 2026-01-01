@@ -28,14 +28,21 @@ func NewEmailHandler(emailService *services.EmailService, logService *services.L
 
 // SendEmailRequest represents the request to send an email
 type SendEmailRequest struct {
-	AccountID   uint     `json:"account_id" binding:"required"`
-	To          []string `json:"to" binding:"required"`
-	Cc          []string `json:"cc"`
-	Bcc         []string `json:"bcc"`
-	Subject     string   `json:"subject" binding:"required"`
-	Body        string   `json:"body"`
-	HTMLBody    string   `json:"html_body"`
-	Attachments []string `json:"attachments"`
+	AccountID   uint              `json:"account_id" binding:"required"`
+	To          []string          `json:"to" binding:"required"`
+	Cc          []string          `json:"cc"`
+	Bcc         []string          `json:"bcc"`
+	Subject     string            `json:"subject" binding:"required"`
+	Body        string            `json:"body"`
+	HTMLBody    string            `json:"html_body"`
+	Attachments []AttachmentData  `json:"attachments"`
+}
+
+// AttachmentData represents attachment data for sending
+type AttachmentData struct {
+	Filename    string `json:"filename"`
+	Content     string `json:"content"`      // Base64 encoded content
+	ContentType string `json:"content_type"`
 }
 
 // SyncRequest represents the request to sync emails
@@ -452,7 +459,15 @@ func (h *EmailHandler) SendEmail(c *gin.Context) {
 		Subject:     req.Subject,
 		Body:        req.Body,
 		HTMLBody:    req.HTMLBody,
-		Attachments: req.Attachments,
+	}
+	
+	// 转换附件数据
+	for _, att := range req.Attachments {
+		sendReq.Attachments = append(sendReq.Attachments, services.AttachmentData{
+			Filename:    att.Filename,
+			Content:     att.Content,
+			ContentType: att.ContentType,
+		})
 	}
 
 	result, err := h.emailService.SendEmail(userID, sendReq)
