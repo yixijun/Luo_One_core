@@ -289,8 +289,9 @@ func (s *EmailService) FetchNewEmailsWithDays(userID, accountID uint, days int) 
 	seqSet := new(imap.SeqSet)
 	seqSet.AddNum(seqNums...)
 
-	// Fetch messages
-	items := []imap.FetchItem{imap.FetchUid, imap.FetchEnvelope, imap.FetchRFC822, imap.FetchBodyStructure, imap.FetchFlags}
+	// Fetch messages - only get envelope and basic info first, not full RFC822
+	// RFC822 can cause parsing errors with non-standard emails
+	items := []imap.FetchItem{imap.FetchUid, imap.FetchEnvelope, imap.FetchBodyStructure, imap.FetchFlags}
 	messages := make(chan *imap.Message, 10)
 	done := make(chan error, 1)
 
@@ -298,33 +299,115 @@ func (s *EmailService) FetchNewEmailsWithDays(userID, accountID uint, days int) 
 		done <- c.Fetch(seqSet, items, messages)
 	}()
 
-	var fetchedEmails []FetchedEmail
-	var parseErrors int
-	var fallbackMessageIDs int
+	// Collect message info first
+	type msgInfo struct {
+		seqNum   uint32
+		uid      uint32
+		envelope *imap.Envelope
+	}
+	var msgInfos []msgInfo
 	for msg := range messages {
-		if msg == nil {
+		if msg == nil || msg.Envelope == nil {
 			continue
 		}
-		email, err := s.parseIMAPMessage(msg)
-		if err != nil {
-			parseErrors++
-			continue
-		}
-		if strings.HasPrefix(email.MessageID, "uid:") || strings.HasPrefix(email.MessageID, "sha256:") || strings.HasPrefix(email.MessageID, "gen:") {
-			fallbackMessageIDs++
-		}
-		fetchedEmails = append(fetchedEmails, email)
+		msgInfos = append(msgInfos, msgInfo{
+			seqNum:   msg.SeqNum,
+			uid:      msg.Uid,
+			envelope: msg.Envelope,
+		})
 	}
 
 	if err := <-done; err != nil {
-		return nil, fmt.Errorf("failed to fetch messages: %v", err)
+		s.logService.LogWarn(userID, models.LogModuleEmail, "fetch", "Fetch envelope failed", map[string]interface{}{
+			"error": err.Error(),
+		})
+	}
+
+	s.logService.LogInfo(userID, models.LogModuleEmail, "fetch", "Envelope fetch completed", map[string]interface{}{
+		"account_id":    accountID,
+		"fetched_count": len(msgInfos),
+	})
+
+	// Now fetch body for each message individually to handle errors gracefully
+	var fetchedEmails []FetchedEmail
+	var parseErrors int
+
+	for _, info := range msgInfos {
+		email := FetchedEmail{
+			UID:     info.uid,
+			Subject: info.envelope.Subject,
+			Date:    info.envelope.Date,
+		}
+
+		if info.envelope.MessageId != "" {
+			email.MessageID = info.envelope.MessageId
+		} else {
+			// Generate fallback message ID
+			email.MessageID = fmt.Sprintf("uid:%d", info.uid)
+		}
+
+		if len(info.envelope.From) > 0 {
+			email.From = formatAddress(info.envelope.From[0])
+		}
+
+		for _, addr := range info.envelope.To {
+			email.To = append(email.To, formatAddress(addr))
+		}
+
+		// Try to fetch body content
+		bodySeqSet := new(imap.SeqSet)
+		bodySeqSet.AddNum(info.seqNum)
+
+		section := &imap.BodySectionName{Peek: true}
+		bodyItems := []imap.FetchItem{section.FetchItem()}
+
+		bodyMessages := make(chan *imap.Message, 1)
+		bodyDone := make(chan error, 1)
+
+		go func() {
+			bodyDone <- c.Fetch(bodySeqSet, bodyItems, bodyMessages)
+		}()
+
+		for bodyMsg := range bodyMessages {
+			if bodyMsg == nil {
+				continue
+			}
+			for _, literal := range bodyMsg.Body {
+				content, err := io.ReadAll(literal)
+				if err != nil {
+					continue
+				}
+				email.RawContent = content
+
+				// Parse body content
+				r := bytes.NewReader(content)
+				entity, err := message.Read(r)
+				if err != nil {
+					// Try parsing as plain mail
+					r.Seek(0, io.SeekStart)
+					m, err := mail.ReadMessage(r)
+					if err == nil {
+						body, _ := io.ReadAll(m.Body)
+						email.Body = string(body)
+					}
+					continue
+				}
+				s.parseMessageEntity(entity, &email)
+			}
+		}
+
+		if err := <-bodyDone; err != nil {
+			// Log but don't fail - we still have envelope info
+			parseErrors++
+		}
+
+		fetchedEmails = append(fetchedEmails, email)
 	}
 
 	s.logService.LogInfo(userID, models.LogModuleEmail, "fetch", "Fetch completed", map[string]interface{}{
 		"account_id":    accountID,
 		"fetched_count": len(fetchedEmails),
 		"parse_errors":  parseErrors,
-		"fallback_ids":  fallbackMessageIDs,
 	})
 
 	return fetchedEmails, nil
