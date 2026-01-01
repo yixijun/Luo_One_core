@@ -714,8 +714,12 @@ func (s *EmailService) ListEmails(userID uint, opts EmailListOptions) (*EmailLis
 	if opts.Page < 1 {
 		opts.Page = 1
 	}
-	if opts.Limit < 1 || opts.Limit > 100 {
+	if opts.Limit < 1 {
 		opts.Limit = 20
+	}
+	// limit=0 或 limit=-1 表示不限制，否则最大1000
+	if opts.Limit > 1000 && opts.Limit != -1 {
+		opts.Limit = 1000
 	}
 	if opts.SortBy == "" {
 		opts.SortBy = "date"
@@ -784,9 +788,12 @@ func (s *EmailService) ListEmails(userID uint, opts EmailListOptions) (*EmailLis
 	}
 	query = query.Order(orderClause)
 
-	// Pagination
-	offset := (opts.Page - 1) * opts.Limit
-	query = query.Offset(offset).Limit(opts.Limit)
+	// Pagination - limit=-1 means no limit
+	if opts.Limit > 0 {
+		offset := (opts.Page - 1) * opts.Limit
+		query = query.Offset(offset).Limit(opts.Limit)
+	}
+	// If limit <= 0, no pagination applied (fetch all)
 
 	// Execute query
 	var emails []models.Email
