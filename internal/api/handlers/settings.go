@@ -38,6 +38,10 @@ type UserSettingsResponse struct {
 	GoogleClientID     string `json:"google_client_id"`
 	GoogleClientSecret string `json:"google_client_secret"`
 	GoogleRedirectURL  string `json:"google_redirect_url"`
+
+	// 主题和字体配置
+	Theme string `json:"theme"`
+	Font  string `json:"font"`
 }
 
 // UpdateSettingsRequest represents the request to update user settings
@@ -55,10 +59,22 @@ type UpdateSettingsRequest struct {
 	GoogleClientID     *string `json:"google_client_id"`
 	GoogleClientSecret *string `json:"google_client_secret"`
 	GoogleRedirectURL  *string `json:"google_redirect_url"`
+
+	// 主题和字体配置
+	Theme *string `json:"theme"`
+	Font  *string `json:"font"`
 }
 
 // toSettingsResponse converts UserSettings model to UserSettingsResponse
 func toSettingsResponse(settings *models.UserSettings) UserSettingsResponse {
+	theme := settings.Theme
+	if theme == "" {
+		theme = "dark"
+	}
+	font := settings.Font
+	if font == "" {
+		font = "system"
+	}
 	return UserSettingsResponse{
 		AIEnabled:          settings.AIEnabled,
 		AIProvider:         settings.AIProvider,
@@ -71,6 +87,8 @@ func toSettingsResponse(settings *models.UserSettings) UserSettingsResponse {
 		GoogleClientID:     settings.GoogleClientID,
 		GoogleClientSecret: settings.GoogleClientSecret,
 		GoogleRedirectURL:  settings.GoogleRedirectURL,
+		Theme:              theme,
+		Font:               font,
 	}
 }
 
@@ -182,6 +200,12 @@ func (h *SettingsHandler) UpdateSettings(c *gin.Context) {
 	}
 	if req.GoogleRedirectURL != nil {
 		settings.GoogleRedirectURL = *req.GoogleRedirectURL
+	}
+	if req.Theme != nil {
+		settings.Theme = *req.Theme
+	}
+	if req.Font != nil {
+		settings.Font = *req.Font
 	}
 
 	// Save updated settings

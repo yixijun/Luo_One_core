@@ -36,4 +36,8 @@ type UserSettings struct {
 	GoogleClientID     string `gorm:"size:500" json:"google_client_id"`
 	GoogleClientSecret string `gorm:"size:500" json:"google_client_secret"`
 	GoogleRedirectURL  string `gorm:"size:500" json:"google_redirect_url"`
+
+	// 主题和字体配置
+	Theme string `gorm:"size:50;default:'dark'" json:"theme"`
+	Font  string `gorm:"size:50;default:'system'" json:"font"`
 }

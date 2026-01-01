@@ -62,6 +62,13 @@ func runMigrations(db *gorm.DB) error {
 		if !db.Migrator().HasColumn(&models.UserSettings{}, "google_redirect_url") {
 			db.Migrator().AddColumn(&models.UserSettings{}, "google_redirect_url")
 		}
+		// 确保主题和字体字段存在
+		if !db.Migrator().HasColumn(&models.UserSettings{}, "theme") {
+			db.Migrator().AddColumn(&models.UserSettings{}, "theme")
+		}
+		if !db.Migrator().HasColumn(&models.UserSettings{}, "font") {
+			db.Migrator().AddColumn(&models.UserSettings{}, "font")
+		}
 	}
 
 	_ = db.Migrator().DropIndex(&models.Email{}, "message_id")
