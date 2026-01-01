@@ -895,34 +895,59 @@ func (s *EmailService) parseMessageEntity(entity *message.Entity, email *Fetched
 	} else if mediaType == "text/html" && email.HTMLBody == "" {
 		body, _ := io.ReadAll(entity.Body)
 		email.HTMLBody = string(body)
-	} else if params["name"] != "" || entity.Header.Get("Content-Disposition") != "" {
-		// This is an attachment
-		content, _ := io.ReadAll(entity.Body)
+	} else {
+		// 检查是否是附件
+		disposition := entity.Header.Get("Content-Disposition")
+		isAttachment := false
+		var filename string
 		
-		// 尝试从多个来源获取文件名
-		filename := params["name"]
-		if filename == "" {
-			// 尝试从 Content-Disposition 头获取文件名
-			disposition := entity.Header.Get("Content-Disposition")
-			if disposition != "" {
-				_, dispParams, err := mime.ParseMediaType(disposition)
-				if err == nil {
-					if fn, ok := dispParams["filename"]; ok && fn != "" {
-						filename = fn
-					}
+		// 解析 Content-Disposition 头
+		if disposition != "" {
+			dispType, dispParams, err := mime.ParseMediaType(disposition)
+			if err == nil {
+				// attachment 或 inline 带文件名都视为附件
+				if dispType == "attachment" || (dispType == "inline" && dispParams["filename"] != "") {
+					isAttachment = true
+					filename = dispParams["filename"]
 				}
 			}
 		}
-		if filename == "" {
-			filename = "attachment"
+		
+		// 如果 Content-Type 有 name 参数，也视为附件
+		if params["name"] != "" {
+			isAttachment = true
+			if filename == "" {
+				filename = params["name"]
+			}
 		}
 		
-		email.Attachments = append(email.Attachments, FetchedAttachment{
-			Filename:    filename,
-			ContentType: mediaType,
-			Content:     content,
-		})
-		email.HasAttachments = true
+		// 非文本类型且有内容的也可能是附件（如图片等）
+		if !isAttachment && !strings.HasPrefix(mediaType, "text/") && mediaType != "" {
+			isAttachment = true
+		}
+		
+		if isAttachment {
+			content, _ := io.ReadAll(entity.Body)
+			if len(content) > 0 {
+				if filename == "" {
+					// 根据 MIME 类型生成默认文件名
+					ext := ".bin"
+					if strings.HasPrefix(mediaType, "image/") {
+						ext = "." + strings.TrimPrefix(mediaType, "image/")
+					} else if strings.HasPrefix(mediaType, "application/pdf") {
+						ext = ".pdf"
+					}
+					filename = "attachment" + ext
+				}
+				
+				email.Attachments = append(email.Attachments, FetchedAttachment{
+					Filename:    filename,
+					ContentType: mediaType,
+					Content:     content,
+				})
+				email.HasAttachments = true
+			}
+		}
 	}
 }
 
@@ -2329,7 +2354,7 @@ func (s *EmailService) DownloadAttachment(userID, emailID uint, filename string)
 // ListAttachments lists all attachments for an email
 func (s *EmailService) ListAttachments(userID, emailID uint) ([]AttachmentInfo, error) {
 	// Verify user owns the email
-	_, err := s.GetEmailByIDAndUserID(emailID, userID)
+	email, err := s.GetEmailByIDAndUserID(emailID, userID)
 	if err != nil {
 		return nil, err
 	}
@@ -2338,6 +2363,17 @@ func (s *EmailService) ListAttachments(userID, emailID uint) ([]AttachmentInfo, 
 	filenames, err := s.userStorage.ListAttachments(userID, emailID)
 	if err != nil {
 		return nil, err
+	}
+
+	// 如果邮件标记有附件但文件系统中没有，尝试从原始邮件解析
+	if len(filenames) == 0 && email.HasAttachments {
+		// 尝试从原始邮件解析附件
+		attachments, parseErr := s.ParseAndSaveAttachments(userID, emailID)
+		if parseErr == nil && len(attachments) > 0 {
+			return attachments, nil
+		}
+		// 如果解析失败，返回空列表
+		return []AttachmentInfo{}, nil
 	}
 
 	var attachments []AttachmentInfo
@@ -2392,4 +2428,82 @@ func (s *EmailService) GetRawEmail(userID, emailID uint) ([]byte, error) {
 
 	// Get account to determine the account ID
 	return s.userStorage.GetRawEmail(userID, email.AccountID, email.MessageID)
+}
+
+// ParseAndSaveAttachments 从原始邮件中解析并保存附件
+// 用于修复已存在但附件未保存的邮件
+func (s *EmailService) ParseAndSaveAttachments(userID, emailID uint) ([]AttachmentInfo, error) {
+	// 获取邮件信息
+	email, err := s.GetEmailByIDAndUserID(emailID, userID)
+	if err != nil {
+		return nil, err
+	}
+
+	// 检查是否已有附件
+	existingAttachments, _ := s.userStorage.ListAttachments(userID, emailID)
+	if len(existingAttachments) > 0 {
+		// 已有附件，直接返回
+		var result []AttachmentInfo
+		for _, filename := range existingAttachments {
+			content, err := s.userStorage.GetAttachment(userID, emailID, filename)
+			if err == nil {
+				result = append(result, AttachmentInfo{
+					Filename: filename,
+					Size:     int64(len(content)),
+				})
+			}
+		}
+		return result, nil
+	}
+
+	// 获取原始邮件内容
+	rawContent, err := s.userStorage.GetRawEmail(userID, email.AccountID, email.MessageID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get raw email: %w", err)
+	}
+
+	if len(rawContent) == 0 {
+		return nil, fmt.Errorf("raw email content is empty")
+	}
+
+	// 解析邮件
+	r := bytes.NewReader(rawContent)
+	entity, err := message.Read(r)
+	if err != nil {
+		return nil, fmt.Errorf("failed to parse email: %w", err)
+	}
+
+	// 解析附件
+	var fetchedEmail FetchedEmail
+	s.parseMessageEntity(entity, &fetchedEmail)
+
+	// 保存附件
+	var result []AttachmentInfo
+	for _, att := range fetchedEmail.Attachments {
+		_, err := s.userStorage.SaveAttachment(userID, emailID, att.Filename, att.Content)
+		if err != nil {
+			s.logService.LogWarn(userID, models.LogModuleEmail, "parse_attachment", "Failed to save attachment", map[string]interface{}{
+				"email_id": emailID,
+				"filename": att.Filename,
+				"error":    err.Error(),
+			})
+			continue
+		}
+		result = append(result, AttachmentInfo{
+			Filename: att.Filename,
+			Size:     int64(len(att.Content)),
+		})
+	}
+
+	// 更新邮件的 has_attachments 字段
+	if len(result) > 0 {
+		s.db.Model(&models.Email{}).Where("id = ?", emailID).Update("has_attachments", true)
+	}
+
+	s.logService.LogInfo(userID, models.LogModuleEmail, "parse_attachment", "Attachments parsed and saved", map[string]interface{}{
+		"email_id":         emailID,
+		"attachment_count": len(result),
+	})
+
+	return result, nil
 }
