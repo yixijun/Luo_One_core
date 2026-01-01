@@ -1664,55 +1664,49 @@ func (s *EmailService) fetchEmailBodyFromIMAP(account *models.EmailAccount, mess
 		uidStr := strings.TrimPrefix(messageID, "uid:")
 		uid, err := strconv.ParseUint(uidStr, 10, 32)
 		if err == nil {
-			// Use UID search
-			uidSet := new(imap.SeqSet)
-			uidSet.AddNum(uint32(uid))
-			seqNums, err = c.UidSearch(imap.NewSearchCriteria())
-			if err != nil {
-				// Fallback: just use the UID directly
-				seqSet := new(imap.SeqSet)
-				seqSet.AddNum(uint32(uid))
-				
-				section := &imap.BodySectionName{Peek: true}
-				items := []imap.FetchItem{section.FetchItem()}
-				
-				messages := make(chan *imap.Message, 1)
-				done := make(chan error, 1)
-				
-				go func() {
-					done <- c.UidFetch(seqSet, items, messages)
-				}()
-				
-				var body, htmlBody string
-				for msg := range messages {
-					if msg == nil {
+			// Directly use UidFetch for uid:xxx format
+			seqSet := new(imap.SeqSet)
+			seqSet.AddNum(uint32(uid))
+			
+			section := &imap.BodySectionName{Peek: true}
+			items := []imap.FetchItem{section.FetchItem()}
+			
+			messages := make(chan *imap.Message, 1)
+			done := make(chan error, 1)
+			
+			go func() {
+				done <- c.UidFetch(seqSet, items, messages)
+			}()
+			
+			var body, htmlBody string
+			for msg := range messages {
+				if msg == nil {
+					continue
+				}
+				for _, literal := range msg.Body {
+					content, err := io.ReadAll(literal)
+					if err != nil {
 						continue
 					}
-					for _, literal := range msg.Body {
-						content, err := io.ReadAll(literal)
-						if err != nil {
-							continue
+					r := bytes.NewReader(content)
+					entity, err := message.Read(r)
+					if err != nil {
+						r.Seek(0, io.SeekStart)
+						m, err := mail.ReadMessage(r)
+						if err == nil {
+							b, _ := io.ReadAll(m.Body)
+							body = string(b)
 						}
-						r := bytes.NewReader(content)
-						entity, err := message.Read(r)
-						if err != nil {
-							r.Seek(0, io.SeekStart)
-							m, err := mail.ReadMessage(r)
-							if err == nil {
-								b, _ := io.ReadAll(m.Body)
-								body = string(b)
-							}
-							continue
-						}
-						fetched := &FetchedEmail{}
-						s.parseMessageEntity(entity, fetched)
-						body = fetched.Body
-						htmlBody = fetched.HTMLBody
+						continue
 					}
+					fetched := &FetchedEmail{}
+					s.parseMessageEntity(entity, fetched)
+					body = fetched.Body
+					htmlBody = fetched.HTMLBody
 				}
-				<-done
-				return body, htmlBody, nil
 			}
+			<-done
+			return body, htmlBody, nil
 		}
 	}
 
