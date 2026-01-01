@@ -35,6 +35,7 @@ type CreateAccountRequest struct {
 	Username    string `json:"username" binding:"required"`
 	Password    string `json:"password" binding:"required"`
 	UseSSL      bool   `json:"use_ssl"`
+	SyncDays    int    `json:"sync_days"` // 默认 -1 全部
 }
 
 // UpdateAccountRequest represents the request to update an email account
@@ -47,6 +48,7 @@ type UpdateAccountRequest struct {
 	Username    string `json:"username"`
 	Password    string `json:"password"`
 	UseSSL      bool   `json:"use_ssl"`
+	SyncDays    *int   `json:"sync_days"` // 使用指针区分 0 和未设置
 }
 
 // AccountResponse represents the response for an email account
@@ -61,6 +63,7 @@ type AccountResponse struct {
 	Username    string `json:"username"`
 	UseSSL      bool   `json:"use_ssl"`
 	Enabled     bool   `json:"enabled"`
+	SyncDays    int    `json:"sync_days"`
 	LastSyncAt  int64  `json:"last_sync_at"`
 	CreatedAt   int64  `json:"created_at"`
 }
@@ -79,6 +82,7 @@ func toAccountResponse(account *models.EmailAccount) AccountResponse {
 		Username:    account.Username,
 		UseSSL:      account.UseSSL,
 		Enabled:     account.Enabled,
+		SyncDays:    account.SyncDays,
 		LastSyncAt:  account.LastSyncAt.Unix(),
 		CreatedAt:   account.CreatedAt.Unix(),
 	}
@@ -161,6 +165,7 @@ func (h *AccountHandler) CreateAccount(c *gin.Context) {
 		Username:    req.Username,
 		Password:    req.Password,
 		UseSSL:      req.UseSSL,
+		SyncDays:    req.SyncDays,
 	}
 
 	account, err := h.accountService.CreateAccount(input)
@@ -296,6 +301,7 @@ func (h *AccountHandler) UpdateAccount(c *gin.Context) {
 		Username:    req.Username,
 		Password:    req.Password,
 		UseSSL:      req.UseSSL,
+		SyncDays:    req.SyncDays,
 	}
 
 	account, err := h.accountService.UpdateAccount(uint(accountID), userID, input)

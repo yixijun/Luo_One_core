@@ -109,6 +109,7 @@ type CreateAccountInput struct {
 	Username    string
 	Password    string
 	UseSSL      bool
+	SyncDays    int
 }
 
 // CreateAccount creates a new email account for a user
@@ -141,6 +142,7 @@ func (s *AccountService) CreateAccount(input CreateAccountInput) (*models.EmailA
 		Username:          input.Username,
 		PasswordEncrypted: encryptedPassword,
 		UseSSL:            input.UseSSL,
+		SyncDays:          input.SyncDays,
 		Enabled:           true, // Default to enabled
 	}
 
@@ -197,6 +199,7 @@ type UpdateAccountInput struct {
 	Username    string
 	Password    string // Optional: only update if not empty
 	UseSSL      bool
+	SyncDays    *int // 使用指针区分 0 和未设置
 }
 
 // UpdateAccount updates an email account
@@ -226,6 +229,11 @@ func (s *AccountService) UpdateAccount(id, userID uint, input UpdateAccountInput
 		account.Username = input.Username
 	}
 	account.UseSSL = input.UseSSL
+
+	// Update sync_days if provided
+	if input.SyncDays != nil {
+		account.SyncDays = *input.SyncDays
+	}
 
 	// Update password if provided
 	if input.Password != "" {
