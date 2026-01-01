@@ -62,6 +62,9 @@ func SetupRouter(db *gorm.DB, cfg *config.Config) (*gin.Engine, *middleware.Auth
 		c.JSON(200, gin.H{"status": "ok"})
 	})
 
+	// OAuth callback - must be outside API key middleware (Google redirects here without API key)
+	router.GET("/api/oauth/google/callback", oauthHandler.GoogleCallback)
+
 	// API routes
 	api := router.Group("/api")
 	{
@@ -74,10 +77,10 @@ func SetupRouter(db *gorm.DB, cfg *config.Config) (*gin.Engine, *middleware.Auth
 			auth.POST("/login", authHandler.Login)
 		}
 
-		// OAuth routes (some require JWT, callback doesn't)
+		// OAuth routes (API key required)
 		oauth := api.Group("/oauth")
 		{
-			oauth.GET("/google/callback", oauthHandler.GoogleCallback) // OAuth callback (no JWT needed)
+			// Note: callback is registered above, outside the API key middleware
 		}
 
 		// Protected routes (API key + JWT required)
