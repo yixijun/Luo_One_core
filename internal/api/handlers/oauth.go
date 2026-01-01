@@ -22,6 +22,7 @@ import (
 // OAuthHandler handles OAuth authentication
 type OAuthHandler struct {
 	accountService *services.AccountService
+	userService    *services.UserService
 	stateStore     *StateStore
 }
 
@@ -39,23 +40,39 @@ type OAuthState struct {
 }
 
 // NewOAuthHandler creates a new OAuthHandler
-func NewOAuthHandler(accountService *services.AccountService) *OAuthHandler {
+func NewOAuthHandler(accountService *services.AccountService, userService *services.UserService) *OAuthHandler {
 	return &OAuthHandler{
 		accountService: accountService,
+		userService:    userService,
 		stateStore: &StateStore{
 			states: make(map[string]*OAuthState),
 		},
 	}
 }
 
-// getGoogleOAuthConfig returns the Google OAuth2 config
-func getGoogleOAuthConfig() *oauth2.Config {
-	clientID := os.Getenv("GOOGLE_CLIENT_ID")
-	clientSecret := os.Getenv("GOOGLE_CLIENT_SECRET")
-	redirectURL := os.Getenv("GOOGLE_REDIRECT_URL")
-	
+// getGoogleOAuthConfig returns the Google OAuth2 config for a user
+func (h *OAuthHandler) getGoogleOAuthConfigForUser(userID uint) (*oauth2.Config, error) {
+	settings, err := h.userService.GetUserSettings(userID)
+	if err != nil {
+		return nil, err
+	}
+
+	clientID := settings.GoogleClientID
+	clientSecret := settings.GoogleClientSecret
+	redirectURL := settings.GoogleRedirectURL
+
+	// 如果数据库没有配置，回退到环境变量
+	if clientID == "" {
+		clientID = os.Getenv("GOOGLE_CLIENT_ID")
+	}
+	if clientSecret == "" {
+		clientSecret = os.Getenv("GOOGLE_CLIENT_SECRET")
+	}
 	if redirectURL == "" {
-		redirectURL = "http://localhost:8080/api/oauth/google/callback"
+		redirectURL = os.Getenv("GOOGLE_REDIRECT_URL")
+		if redirectURL == "" {
+			redirectURL = "http://localhost:8080/api/oauth/google/callback"
+		}
 	}
 
 	return &oauth2.Config{
@@ -67,7 +84,7 @@ func getGoogleOAuthConfig() *oauth2.Config {
 			"https://www.googleapis.com/auth/userinfo.email",
 		},
 		Endpoint: google.Endpoint,
-	}
+	}, nil
 }
 
 // generateState generates a random state token
@@ -94,13 +111,24 @@ func (h *OAuthHandler) GetGoogleAuthURL(c *gin.Context) {
 		return
 	}
 
-	config := getGoogleOAuthConfig()
+	config, err := h.getGoogleOAuthConfigForUser(userID)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"success": false,
+			"error": gin.H{
+				"code":    "CONFIG_ERROR",
+				"message": "Failed to get OAuth config",
+			},
+		})
+		return
+	}
+
 	if config.ClientID == "" || config.ClientSecret == "" {
 		c.JSON(http.StatusInternalServerError, gin.H{
 			"success": false,
 			"error": gin.H{
 				"code":    "OAUTH_NOT_CONFIGURED",
-				"message": "Google OAuth is not configured. Please set GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET environment variables.",
+				"message": "Google OAuth 未配置。请在设置页面配置 Google Client ID 和 Client Secret。",
 			},
 		})
 		return
@@ -181,8 +209,14 @@ func (h *OAuthHandler) GoogleCallback(c *gin.Context) {
 		return
 	}
 
+	// Get OAuth config for this user
+	config, err := h.getGoogleOAuthConfigForUser(oauthState.UserID)
+	if err != nil {
+		c.Redirect(http.StatusFound, "/?oauth_error=config_error")
+		return
+	}
+
 	// Exchange code for token
-	config := getGoogleOAuthConfig()
 	token, err := config.Exchange(context.Background(), code)
 	if err != nil {
 		c.Redirect(http.StatusFound, "/?oauth_error=token_exchange_failed")
@@ -262,12 +296,33 @@ func (h *OAuthHandler) cleanupOldStates() {
 // GetOAuthConfig returns the OAuth configuration status
 // GET /api/oauth/config
 func (h *OAuthHandler) GetOAuthConfig(c *gin.Context) {
-	googleClientID := os.Getenv("GOOGLE_CLIENT_ID")
-	
+	userID, exists := middleware.GetUserIDFromContext(c)
+	if !exists {
+		c.JSON(http.StatusUnauthorized, gin.H{
+			"success": false,
+			"error": gin.H{
+				"code":    "AUTH_FAILED",
+				"message": "User not authenticated",
+			},
+		})
+		return
+	}
+
+	config, err := h.getGoogleOAuthConfigForUser(userID)
+	if err != nil {
+		c.JSON(http.StatusOK, gin.H{
+			"success": true,
+			"data": gin.H{
+				"google_enabled": false,
+			},
+		})
+		return
+	}
+
 	c.JSON(http.StatusOK, gin.H{
 		"success": true,
 		"data": gin.H{
-			"google_enabled": googleClientID != "",
+			"google_enabled": config.ClientID != "" && config.ClientSecret != "",
 		},
 	})
 }

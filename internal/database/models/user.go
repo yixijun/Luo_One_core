@@ -31,4 +31,9 @@ type UserSettings struct {
 	DetectAd        bool   `gorm:"default:true" json:"detect_ad"`
 	Summarize       bool   `gorm:"default:false" json:"summarize"`
 	JudgeImportance bool   `gorm:"default:true" json:"judge_importance"`
+
+	// Google OAuth 配置
+	GoogleClientID     string `gorm:"size:500" json:"google_client_id"`
+	GoogleClientSecret string `gorm:"size:500" json:"google_client_secret"`
+	GoogleRedirectURL  string `gorm:"size:500" json:"google_redirect_url"`
 }

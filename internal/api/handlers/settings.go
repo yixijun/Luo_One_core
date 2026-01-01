@@ -33,6 +33,11 @@ type UserSettingsResponse struct {
 	DetectAd        bool   `json:"detect_ad"`
 	Summarize       bool   `json:"summarize"`
 	JudgeImportance bool   `json:"judge_importance"`
+
+	// Google OAuth 配置
+	GoogleClientID     string `json:"google_client_id"`
+	GoogleClientSecret string `json:"google_client_secret"`
+	GoogleRedirectURL  string `json:"google_redirect_url"`
 }
 
 // UpdateSettingsRequest represents the request to update user settings
@@ -45,19 +50,27 @@ type UpdateSettingsRequest struct {
 	DetectAd        *bool   `json:"detect_ad"`
 	Summarize       *bool   `json:"summarize"`
 	JudgeImportance *bool   `json:"judge_importance"`
+
+	// Google OAuth 配置
+	GoogleClientID     *string `json:"google_client_id"`
+	GoogleClientSecret *string `json:"google_client_secret"`
+	GoogleRedirectURL  *string `json:"google_redirect_url"`
 }
 
 // toSettingsResponse converts UserSettings model to UserSettingsResponse
 func toSettingsResponse(settings *models.UserSettings) UserSettingsResponse {
 	return UserSettingsResponse{
-		AIEnabled:       settings.AIEnabled,
-		AIProvider:      settings.AIProvider,
-		AIAPIKey:        settings.AIAPIKey,
-		AIModel:         settings.AIModel,
-		ExtractCode:     settings.ExtractCode,
-		DetectAd:        settings.DetectAd,
-		Summarize:       settings.Summarize,
-		JudgeImportance: settings.JudgeImportance,
+		AIEnabled:          settings.AIEnabled,
+		AIProvider:         settings.AIProvider,
+		AIAPIKey:           settings.AIAPIKey,
+		AIModel:            settings.AIModel,
+		ExtractCode:        settings.ExtractCode,
+		DetectAd:           settings.DetectAd,
+		Summarize:          settings.Summarize,
+		JudgeImportance:    settings.JudgeImportance,
+		GoogleClientID:     settings.GoogleClientID,
+		GoogleClientSecret: settings.GoogleClientSecret,
+		GoogleRedirectURL:  settings.GoogleRedirectURL,
 	}
 }
 
@@ -160,6 +173,15 @@ func (h *SettingsHandler) UpdateSettings(c *gin.Context) {
 	}
 	if req.JudgeImportance != nil {
 		settings.JudgeImportance = *req.JudgeImportance
+	}
+	if req.GoogleClientID != nil {
+		settings.GoogleClientID = *req.GoogleClientID
+	}
+	if req.GoogleClientSecret != nil {
+		settings.GoogleClientSecret = *req.GoogleClientSecret
+	}
+	if req.GoogleRedirectURL != nil {
+		settings.GoogleRedirectURL = *req.GoogleRedirectURL
 	}
 
 	// Save updated settings

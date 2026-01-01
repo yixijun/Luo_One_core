@@ -55,7 +55,7 @@ func SetupRouter(db *gorm.DB, cfg *config.Config) (*gin.Engine, *middleware.Auth
 	accountHandler := handlers.NewAccountHandler(accountService, logService)
 	emailHandler := handlers.NewEmailHandler(emailService, logService)
 	settingsHandler := handlers.NewSettingsHandler(userService, logService)
-	oauthHandler := handlers.NewOAuthHandler(accountService)
+	oauthHandler := handlers.NewOAuthHandler(accountService, userService)
 
 	// Health check endpoint (no auth required)
 	router.GET("/health", func(c *gin.Context) {
