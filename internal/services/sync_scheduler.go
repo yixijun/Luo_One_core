@@ -41,11 +41,16 @@ func (s *SyncScheduler) Start() {
 	s.running = true
 	s.mu.Unlock()
 
-	log.Printf("Starting email sync scheduler with interval: %v", s.interval)
+	log.Printf("[SyncScheduler] Starting with interval: %v", s.interval)
 
 	go func() {
-		// 启动后等待一段时间再开始第一次同步
-		time.Sleep(30 * time.Second)
+		// 启动后等待 10 秒再开始第一次同步
+		log.Println("[SyncScheduler] Waiting 10 seconds before first sync...")
+		time.Sleep(10 * time.Second)
+		
+		// 立即执行第一次同步
+		log.Println("[SyncScheduler] Running first sync...")
+		s.syncAllAccounts()
 
 		ticker := time.NewTicker(s.interval)
 		defer ticker.Stop()
@@ -53,9 +58,10 @@ func (s *SyncScheduler) Start() {
 		for {
 			select {
 			case <-ticker.C:
+				log.Println("[SyncScheduler] Running scheduled sync...")
 				s.syncAllAccounts()
 			case <-s.stopChan:
-				log.Println("Stopping email sync scheduler")
+				log.Println("[SyncScheduler] Stopping")
 				return
 			}
 		}
@@ -80,26 +86,24 @@ func (s *SyncScheduler) syncAllAccounts() {
 	// 获取所有启用的账户
 	var accounts []models.EmailAccount
 	if err := s.db.Where("enabled = ?", true).Find(&accounts).Error; err != nil {
-		log.Printf("Failed to get accounts for sync: %v", err)
+		log.Printf("[SyncScheduler] Failed to get accounts: %v", err)
 		return
 	}
 
 	if len(accounts) == 0 {
+		log.Println("[SyncScheduler] No enabled accounts found")
 		return
 	}
 
-	log.Printf("Auto-sync: syncing %d accounts", len(accounts))
+	log.Printf("[SyncScheduler] Syncing %d accounts", len(accounts))
 
 	for _, account := range accounts {
-		// 获取账户所属用户
-		var user models.User
-		if err := s.db.First(&user, account.UserID).Error; err != nil {
-			continue
-		}
-
+		log.Printf("[SyncScheduler] Syncing account %d (%s)", account.ID, account.Email)
+		
 		// 同步邮件
 		count, err := s.emailService.SyncAndSaveEmails(account.UserID, account.ID)
 		if err != nil {
+			log.Printf("[SyncScheduler] Account %d sync failed: %v", account.ID, err)
 			s.logService.LogWarn(account.UserID, models.LogModuleEmail, "auto_sync", "Auto sync failed", map[string]interface{}{
 				"account_id": account.ID,
 				"error":      err.Error(),
@@ -107,11 +111,14 @@ func (s *SyncScheduler) syncAllAccounts() {
 			continue
 		}
 
+		log.Printf("[SyncScheduler] Account %d synced %d new emails", account.ID, count)
 		if count > 0 {
 			s.logService.LogInfo(account.UserID, models.LogModuleEmail, "auto_sync", "Auto sync completed", map[string]interface{}{
-				"account_id":  account.ID,
+				"account_id":   account.ID,
 				"synced_count": count,
 			})
 		}
 	}
+	
+	log.Println("[SyncScheduler] Sync cycle completed")
 }
