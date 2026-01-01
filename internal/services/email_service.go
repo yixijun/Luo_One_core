@@ -134,16 +134,34 @@ func (s *EmailService) connectIMAP(account *models.EmailAccount) (*client.Client
 	addr := fmt.Sprintf("%s:%d", account.IMAPHost, account.IMAPPort)
 	var c *client.Client
 
+	// 设置连接超时为 10 秒
+	dialer := &net.Dialer{Timeout: 10 * time.Second}
+
 	if account.UseSSL {
 		tlsConfig := &tls.Config{ServerName: account.IMAPHost}
-		c, err = client.DialTLS(addr, tlsConfig)
+		conn, err := tls.DialWithDialer(dialer, "tcp", addr, tlsConfig)
+		if err != nil {
+			return nil, fmt.Errorf("%w: %v", ErrIMAPConnectionFailed, err)
+		}
+		c, err = client.New(conn)
+		if err != nil {
+			conn.Close()
+			return nil, fmt.Errorf("%w: %v", ErrIMAPConnectionFailed, err)
+		}
 	} else {
-		c, err = client.Dial(addr)
+		conn, err := dialer.Dial("tcp", addr)
+		if err != nil {
+			return nil, fmt.Errorf("%w: %v", ErrIMAPConnectionFailed, err)
+		}
+		c, err = client.New(conn)
+		if err != nil {
+			conn.Close()
+			return nil, fmt.Errorf("%w: %v", ErrIMAPConnectionFailed, err)
+		}
 	}
 
-	if err != nil {
-		return nil, fmt.Errorf("%w: %v", ErrIMAPConnectionFailed, err)
-	}
+	// 设置命令超时为 30 秒
+	c.Timeout = 30 * time.Second
 
 	// Send IMAP ID command for servers that require client identification (e.g., 188.com, 163.com)
 	// This must be done before login for some email providers
