@@ -122,6 +122,7 @@ func SetupRouter(db *gorm.DB, cfg *config.Config) (*gin.Engine, *middleware.Auth
 				emails.PUT("/:id/read", emailHandler.MarkAsRead)
 				emails.POST("/send", emailHandler.SendEmail)
 				emails.POST("/sync", emailHandler.SyncEmails)
+				emails.GET("/sync/progress", emailHandler.GetSyncProgress) // 获取全量同步进度
 				// Attachment routes
 				emails.GET("/:id/attachments", emailHandler.ListAttachments)
 				emails.GET("/:id/attachments/:filename", emailHandler.DownloadAttachment)

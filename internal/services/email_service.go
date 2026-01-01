@@ -1041,32 +1041,257 @@ func (s *EmailService) SyncAndSaveEmailsWithDays(userID, accountID uint, days in
 }
 
 // SyncAllEmails 全量同步所有邮件，分批处理避免超时
-// SyncAllEmails 全量同步所有邮件，使用 noLimit 模式一次性获取所有邮件
+// FullSyncProgress 全量同步进度
+type FullSyncProgress struct {
+	AccountID     uint   `json:"account_id"`
+	Status        string `json:"status"` // "idle", "running", "completed", "failed"
+	TotalMessages uint32 `json:"total_messages"`
+	Processed     uint32 `json:"processed"`
+	Saved         int    `json:"saved"`
+	Skipped       int    `json:"skipped"`
+	CurrentBatch  int    `json:"current_batch"`
+	TotalBatches  int    `json:"total_batches"`
+	Error         string `json:"error,omitempty"`
+}
+
+// 全量同步进度存储（内存中）
+var fullSyncProgressMap = make(map[uint]*FullSyncProgress)
+var fullSyncProgressMutex sync.RWMutex
+
+// GetFullSyncProgress 获取全量同步进度
+func (s *EmailService) GetFullSyncProgress(accountID uint) *FullSyncProgress {
+	fullSyncProgressMutex.RLock()
+	defer fullSyncProgressMutex.RUnlock()
+	if progress, ok := fullSyncProgressMap[accountID]; ok {
+		return progress
+	}
+	return &FullSyncProgress{AccountID: accountID, Status: "idle"}
+}
+
+// SyncAllEmails 全量同步所有邮件，分批处理并更新进度
 func (s *EmailService) SyncAllEmails(userID, accountID uint) (int, error) {
 	account, err := s.accountService.GetAccountByIDAndUserID(accountID, userID)
 	if err != nil {
 		return 0, err
 	}
 
-	s.logService.LogInfo(userID, models.LogModuleEmail, "full_sync", "Starting full sync (no limit mode)", map[string]interface{}{
+	// 初始化进度
+	progress := &FullSyncProgress{
+		AccountID: accountID,
+		Status:    "running",
+	}
+	fullSyncProgressMutex.Lock()
+	fullSyncProgressMap[accountID] = progress
+	fullSyncProgressMutex.Unlock()
+
+	s.logService.LogInfo(userID, models.LogModuleEmail, "full_sync", "Starting full sync (batch mode)", map[string]interface{}{
 		"account_id": accountID,
 		"email":      account.Email,
 	})
 
-	// 直接使用 SyncAndSaveEmailsNoLimit，一次性获取所有邮件
-	savedCount, err := s.SyncAndSaveEmailsNoLimit(userID, accountID)
+	// 连接 IMAP 获取总邮件数
+	c, err := s.connectIMAP(account)
 	if err != nil {
-		s.logService.LogError(userID, models.LogModuleEmail, "full_sync", "Full sync failed", map[string]interface{}{
-			"error": err.Error(),
-		})
+		progress.Status = "failed"
+		progress.Error = err.Error()
 		return 0, err
 	}
 
-	s.logService.LogInfo(userID, models.LogModuleEmail, "full_sync", "Full sync completed", map[string]interface{}{
-		"total_saved": savedCount,
+	mbox, err := c.Select("INBOX", true)
+	c.Logout()
+	if err != nil {
+		progress.Status = "failed"
+		progress.Error = err.Error()
+		return 0, err
+	}
+
+	progress.TotalMessages = mbox.Messages
+	
+	// 计算批次
+	const batchSize = 200
+	totalBatches := int((mbox.Messages + batchSize - 1) / batchSize)
+	progress.TotalBatches = totalBatches
+
+	s.logService.LogInfo(userID, models.LogModuleEmail, "full_sync", "Full sync plan", map[string]interface{}{
+		"total_messages": mbox.Messages,
+		"batch_size":     batchSize,
+		"total_batches":  totalBatches,
 	})
 
-	return savedCount, nil
+	// 确保目录存在
+	if err := s.userManager.CreateAccountDirectories(userID, accountID); err != nil {
+		progress.Status = "failed"
+		progress.Error = err.Error()
+		return 0, err
+	}
+
+	totalSaved := 0
+	totalSkipped := 0
+
+	// 分批处理
+	for batch := 0; batch < totalBatches; batch++ {
+		progress.CurrentBatch = batch + 1
+		
+		startSeq := uint32(batch*batchSize + 1)
+		endSeq := uint32((batch + 1) * batchSize)
+		if endSeq > mbox.Messages {
+			endSeq = mbox.Messages
+		}
+
+		s.logService.LogInfo(userID, models.LogModuleEmail, "full_sync", "Processing batch", map[string]interface{}{
+			"batch":     batch + 1,
+			"start_seq": startSeq,
+			"end_seq":   endSeq,
+		})
+
+		// 获取这一批邮件
+		saved, skipped, err := s.syncBatchEmails(userID, accountID, account, startSeq, endSeq)
+		if err != nil {
+			s.logService.LogError(userID, models.LogModuleEmail, "full_sync", "Batch failed", map[string]interface{}{
+				"batch": batch + 1,
+				"error": err.Error(),
+			})
+			// 继续下一批，不中断
+		}
+
+		totalSaved += saved
+		totalSkipped += skipped
+		progress.Saved = totalSaved
+		progress.Skipped = totalSkipped
+		progress.Processed = endSeq
+
+		s.logService.LogInfo(userID, models.LogModuleEmail, "full_sync", "Batch completed", map[string]interface{}{
+			"batch":         batch + 1,
+			"saved":         saved,
+			"skipped":       skipped,
+			"total_saved":   totalSaved,
+			"total_skipped": totalSkipped,
+		})
+	}
+
+	// 更新最后同步时间
+	s.db.Model(&models.EmailAccount{}).Where("id = ?", accountID).Update("last_sync_at", time.Now())
+
+	progress.Status = "completed"
+	s.logService.LogInfo(userID, models.LogModuleEmail, "full_sync", "Full sync completed", map[string]interface{}{
+		"total_saved":   totalSaved,
+		"total_skipped": totalSkipped,
+	})
+
+	return totalSaved, nil
+}
+
+// syncBatchEmails 同步一批邮件
+func (s *EmailService) syncBatchEmails(userID, accountID uint, account *models.EmailAccount, startSeq, endSeq uint32) (saved, skipped int, err error) {
+	c, err := s.connectIMAP(account)
+	if err != nil {
+		return 0, 0, err
+	}
+	defer c.Logout()
+
+	_, err = c.Select("INBOX", false)
+	if err != nil {
+		return 0, 0, err
+	}
+
+	// 构建序号集合
+	seqSet := new(imap.SeqSet)
+	seqSet.AddRange(startSeq, endSeq)
+
+	// 获取 envelope 和 body
+	section := &imap.BodySectionName{Peek: true}
+	items := []imap.FetchItem{imap.FetchUid, imap.FetchEnvelope, section.FetchItem()}
+
+	messages := make(chan *imap.Message, 50)
+	done := make(chan error, 1)
+
+	go func() {
+		done <- c.Fetch(seqSet, items, messages)
+	}()
+
+	for msg := range messages {
+		if msg == nil || msg.Envelope == nil {
+			continue
+		}
+
+		// 获取 MessageID
+		messageID := msg.Envelope.MessageId
+		if messageID == "" {
+			messageID = fmt.Sprintf("uid:%d", msg.Uid)
+		}
+
+		// 检查是否已存在
+		var existing models.Email
+		if err := s.db.Where("account_id = ? AND message_id = ?", accountID, messageID).First(&existing).Error; err == nil {
+			skipped++
+			continue
+		}
+
+		// 解析邮件内容
+		email := FetchedEmail{
+			UID:       msg.Uid,
+			MessageID: messageID,
+			Subject:   msg.Envelope.Subject,
+			Date:      msg.Envelope.Date,
+		}
+
+		if len(msg.Envelope.From) > 0 {
+			email.From = formatAddress(msg.Envelope.From[0])
+		}
+		for _, addr := range msg.Envelope.To {
+			email.To = append(email.To, formatAddress(addr))
+		}
+
+		// 获取 body
+		for _, literal := range msg.Body {
+			content, err := io.ReadAll(literal)
+			if err == nil {
+				email.RawContent = content
+				r := bytes.NewReader(content)
+				entity, err := message.Read(r)
+				if err == nil {
+					s.parseMessageEntity(entity, &email)
+				} else {
+					r.Seek(0, io.SeekStart)
+					m, err := mail.ReadMessage(r)
+					if err == nil {
+						b, _ := io.ReadAll(m.Body)
+						email.Body = string(b)
+					}
+				}
+			}
+		}
+
+		// 保存邮件
+		rawFilePath, err := s.userStorage.SaveRawEmail(userID, accountID, email.MessageID, email.RawContent)
+		if err != nil {
+			continue
+		}
+
+		toAddrsJSON, _ := json.Marshal(email.To)
+		emailRecord := &models.Email{
+			AccountID:      accountID,
+			MessageID:      email.MessageID,
+			Subject:        email.Subject,
+			FromAddr:       email.From,
+			ToAddrs:        string(toAddrsJSON),
+			Date:           email.Date,
+			Body:           email.Body,
+			HTMLBody:       email.HTMLBody,
+			HasAttachments: email.HasAttachments,
+			IsRead:         false,
+			Folder:         models.FolderInbox,
+			RawFilePath:    rawFilePath,
+		}
+
+		if err := s.db.Create(emailRecord).Error; err != nil {
+			continue
+		}
+		saved++
+	}
+
+	<-done
+	return saved, skipped, nil
 }
 
 // SyncAndSaveEmailsNoLimit 全量同步，不限制邮件数量

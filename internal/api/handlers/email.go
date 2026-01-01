@@ -564,6 +564,40 @@ func (h *EmailHandler) SyncEmails(c *gin.Context) {
 	})
 }
 
+// GetSyncProgress returns the full sync progress for an account
+// GET /api/emails/sync/progress?account_id=xxx
+func (h *EmailHandler) GetSyncProgress(c *gin.Context) {
+	_, exists := middleware.GetUserIDFromContext(c)
+	if !exists {
+		c.JSON(http.StatusUnauthorized, gin.H{
+			"success": false,
+			"error": gin.H{
+				"code":    "AUTH_FAILED",
+				"message": "User not authenticated",
+			},
+		})
+		return
+	}
+
+	accountID, err := strconv.ParseUint(c.Query("account_id"), 10, 32)
+	if err != nil || accountID == 0 {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"success": false,
+			"error": gin.H{
+				"code":    "INVALID_PARAMS",
+				"message": "account_id is required",
+			},
+		})
+		return
+	}
+
+	progress := h.emailService.GetFullSyncProgress(uint(accountID))
+	c.JSON(http.StatusOK, gin.H{
+		"success": true,
+		"data":    progress,
+	})
+}
+
 // GetEmailCount returns the total email count for checking updates
 // GET /api/emails/count
 func (h *EmailHandler) GetEmailCount(c *gin.Context) {
