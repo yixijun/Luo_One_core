@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"crypto/sha256"
 	"crypto/tls"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -39,6 +40,44 @@ var (
 	// ErrInvalidEmailData indicates invalid email data
 	ErrInvalidEmailData = errors.New("invalid email data")
 )
+
+// loginAuth implements smtp.Auth for LOGIN authentication
+// Required for QQ Mail, 163 Mail and other Chinese email providers
+type loginAuth struct {
+	username, password string
+}
+
+func newLoginAuth(username, password string) smtp.Auth {
+	return &loginAuth{username, password}
+}
+
+func (a *loginAuth) Start(server *smtp.ServerInfo) (string, []byte, error) {
+	return "LOGIN", []byte{}, nil
+}
+
+func (a *loginAuth) Next(fromServer []byte, more bool) ([]byte, error) {
+	if more {
+		switch string(fromServer) {
+		case "Username:", "username:":
+			return []byte(a.username), nil
+		case "Password:", "password:":
+			return []byte(a.password), nil
+		default:
+			// Some servers send base64 encoded prompts
+			decoded, err := base64.StdEncoding.DecodeString(string(fromServer))
+			if err == nil {
+				switch strings.ToLower(string(decoded)) {
+				case "username:", "username":
+					return []byte(a.username), nil
+				case "password:", "password":
+					return []byte(a.password), nil
+				}
+			}
+			return nil, fmt.Errorf("unexpected server challenge: %s", fromServer)
+		}
+	}
+	return nil, nil
+}
 
 // EmailService handles email-related business logic
 type EmailService struct {
@@ -952,6 +991,17 @@ func (s *EmailService) sendViaSMTP(account *models.EmailAccount, password string
 	recipients = append(recipients, req.Cc...)
 	recipients = append(recipients, req.Bcc...)
 
+	// Determine auth method based on host
+	// QQ Mail, 163 Mail, and other Chinese providers require LOGIN auth
+	useLoginAuth := strings.Contains(account.SMTPHost, "qq.com") ||
+		strings.Contains(account.SMTPHost, "163.com") ||
+		strings.Contains(account.SMTPHost, "126.com") ||
+		strings.Contains(account.SMTPHost, "yeah.net") ||
+		strings.Contains(account.SMTPHost, "sina.com") ||
+		strings.Contains(account.SMTPHost, "sohu.com") ||
+		strings.Contains(account.SMTPHost, "aliyun.com") ||
+		strings.Contains(account.SMTPHost, "188.com")
+
 	if account.UseSSL {
 		// Connect with TLS (SMTPS)
 		tlsConfig := &tls.Config{
@@ -969,10 +1019,28 @@ func (s *EmailService) sendViaSMTP(account *models.EmailAccount, password string
 		}
 		defer client.Close()
 
-		// Authenticate
-		auth := smtp.PlainAuth("", account.Username, password, account.SMTPHost)
+		// Authenticate - try LOGIN auth first for Chinese providers, fallback to PLAIN
+		var auth smtp.Auth
+		if useLoginAuth {
+			auth = newLoginAuth(account.Username, password)
+		} else {
+			auth = smtp.PlainAuth("", account.Username, password, account.SMTPHost)
+		}
+		
 		if err := client.Auth(auth); err != nil {
-			return fmt.Errorf("authentication failed: %v", err)
+			// If LOGIN auth failed, try PLAIN auth as fallback
+			if useLoginAuth {
+				auth = smtp.PlainAuth("", account.Username, password, account.SMTPHost)
+				if err2 := client.Auth(auth); err2 != nil {
+					return fmt.Errorf("authentication failed (tried LOGIN and PLAIN): %v", err)
+				}
+			} else {
+				// If PLAIN auth failed, try LOGIN auth as fallback
+				auth = newLoginAuth(account.Username, password)
+				if err2 := client.Auth(auth); err2 != nil {
+					return fmt.Errorf("authentication failed (tried PLAIN and LOGIN): %v", err)
+				}
+			}
 		}
 
 		// Send email
@@ -1019,10 +1087,28 @@ func (s *EmailService) sendViaSMTP(account *models.EmailAccount, password string
 		}
 	}
 
-	// Authenticate
-	auth := smtp.PlainAuth("", account.Username, password, account.SMTPHost)
+	// Authenticate - try LOGIN auth first for Chinese providers, fallback to PLAIN
+	var auth smtp.Auth
+	if useLoginAuth {
+		auth = newLoginAuth(account.Username, password)
+	} else {
+		auth = smtp.PlainAuth("", account.Username, password, account.SMTPHost)
+	}
+	
 	if err := client.Auth(auth); err != nil {
-		return fmt.Errorf("authentication failed: %v", err)
+		// If LOGIN auth failed, try PLAIN auth as fallback
+		if useLoginAuth {
+			auth = smtp.PlainAuth("", account.Username, password, account.SMTPHost)
+			if err2 := client.Auth(auth); err2 != nil {
+				return fmt.Errorf("authentication failed (tried LOGIN and PLAIN): %v", err)
+			}
+		} else {
+			// If PLAIN auth failed, try LOGIN auth as fallback
+			auth = newLoginAuth(account.Username, password)
+			if err2 := client.Auth(auth); err2 != nil {
+				return fmt.Errorf("authentication failed (tried PLAIN and LOGIN): %v", err)
+			}
+		}
 	}
 
 	// Send email
