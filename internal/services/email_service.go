@@ -13,6 +13,7 @@ import (
 	"net"
 	"net/mail"
 	"net/smtp"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -747,14 +748,28 @@ func (s *EmailService) GetEmailByIDAndUserID(id, userID uint) (*models.Email, er
 
 	// If body is empty, fetch from IMAP
 	if email.Body == "" && email.HTMLBody == "" {
+		s.logService.LogInfo(userID, models.LogModuleEmail, "fetch_body", "Fetching body from IMAP", map[string]interface{}{
+			"email_id":   id,
+			"message_id": email.MessageID,
+		})
 		body, htmlBody, err := s.fetchEmailBodyFromIMAP(account, email.MessageID)
-		if err == nil && (body != "" || htmlBody != "") {
+		if err != nil {
+			s.logService.LogWarn(userID, models.LogModuleEmail, "fetch_body", "Failed to fetch body", map[string]interface{}{
+				"email_id": id,
+				"error":    err.Error(),
+			})
+		} else if body != "" || htmlBody != "" {
 			email.Body = body
 			email.HTMLBody = htmlBody
 			// Update in database
 			s.db.Model(&email).Updates(map[string]interface{}{
 				"body":      body,
 				"html_body": htmlBody,
+			})
+			s.logService.LogInfo(userID, models.LogModuleEmail, "fetch_body", "Body fetched and saved", map[string]interface{}{
+				"email_id":  id,
+				"body_len":  len(body),
+				"html_len":  len(htmlBody),
 			})
 		}
 	}
@@ -775,10 +790,69 @@ func (s *EmailService) fetchEmailBodyFromIMAP(account *models.EmailAccount, mess
 		return "", "", err
 	}
 
-	// Search by message ID
+	var seqNums []uint32
+
+	// Check if messageID is a UID fallback (uid:xxx format)
+	if strings.HasPrefix(messageID, "uid:") {
+		uidStr := strings.TrimPrefix(messageID, "uid:")
+		uid, err := strconv.ParseUint(uidStr, 10, 32)
+		if err == nil {
+			// Use UID search
+			uidSet := new(imap.SeqSet)
+			uidSet.AddNum(uint32(uid))
+			seqNums, err = c.UidSearch(imap.NewSearchCriteria())
+			if err != nil {
+				// Fallback: just use the UID directly
+				seqSet := new(imap.SeqSet)
+				seqSet.AddNum(uint32(uid))
+				
+				section := &imap.BodySectionName{Peek: true}
+				items := []imap.FetchItem{section.FetchItem()}
+				
+				messages := make(chan *imap.Message, 1)
+				done := make(chan error, 1)
+				
+				go func() {
+					done <- c.UidFetch(seqSet, items, messages)
+				}()
+				
+				var body, htmlBody string
+				for msg := range messages {
+					if msg == nil {
+						continue
+					}
+					for _, literal := range msg.Body {
+						content, err := io.ReadAll(literal)
+						if err != nil {
+							continue
+						}
+						r := bytes.NewReader(content)
+						entity, err := message.Read(r)
+						if err != nil {
+							r.Seek(0, io.SeekStart)
+							m, err := mail.ReadMessage(r)
+							if err == nil {
+								b, _ := io.ReadAll(m.Body)
+								body = string(b)
+							}
+							continue
+						}
+						fetched := &FetchedEmail{}
+						s.parseMessageEntity(entity, fetched)
+						body = fetched.Body
+						htmlBody = fetched.HTMLBody
+					}
+				}
+				<-done
+				return body, htmlBody, nil
+			}
+		}
+	}
+
+	// Search by message ID header
 	criteria := imap.NewSearchCriteria()
 	criteria.Header.Add("Message-Id", messageID)
-	seqNums, err := c.Search(criteria)
+	seqNums, err = c.Search(criteria)
 	if err != nil || len(seqNums) == 0 {
 		// Try without angle brackets
 		if strings.HasPrefix(messageID, "<") {
@@ -787,7 +861,7 @@ func (s *EmailService) fetchEmailBodyFromIMAP(account *models.EmailAccount, mess
 			seqNums, err = c.Search(criteria)
 		}
 		if err != nil || len(seqNums) == 0 {
-			return "", "", fmt.Errorf("message not found")
+			return "", "", fmt.Errorf("message not found: %s", messageID)
 		}
 	}
 
