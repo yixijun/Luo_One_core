@@ -559,6 +559,11 @@ func (s *EmailService) SyncAndSaveEmails(userID, accountID uint) (int, error) {
 	if err != nil {
 		return 0, err
 	}
+	s.logService.LogInfo(userID, models.LogModuleEmail, "sync", "Starting sync with account settings", map[string]interface{}{
+		"account_id": accountID,
+		"sync_days":  account.SyncDays,
+		"email":      account.Email,
+	})
 	return s.SyncAndSaveEmailsWithDays(userID, accountID, account.SyncDays)
 }
 
@@ -578,10 +583,12 @@ func (s *EmailService) SyncAndSaveEmailsWithDays(userID, accountID uint, days in
 	}
 
 	savedCount := 0
+	skippedCount := 0
 	for _, fetched := range fetchedEmails {
 		// Check if email already exists
 		var existing models.Email
 		if err := s.db.Where("account_id = ? AND message_id = ?", accountID, fetched.MessageID).First(&existing).Error; err == nil {
+			skippedCount++
 			continue // Email already exists
 		}
 
@@ -642,8 +649,11 @@ func (s *EmailService) SyncAndSaveEmailsWithDays(userID, accountID uint, days in
 
 	// Log sync completion
 	s.logService.LogInfo(userID, models.LogModuleEmail, "sync", "Email sync completed", map[string]interface{}{
-		"account_id":  accountID,
-		"saved_count": savedCount,
+		"account_id":    accountID,
+		"fetched_count": len(fetchedEmails),
+		"saved_count":   savedCount,
+		"skipped_count": skippedCount,
+		"days":          days,
 	})
 
 	return savedCount, nil
