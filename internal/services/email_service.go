@@ -312,6 +312,12 @@ func (s *EmailService) FetchNewEmails(userID, accountID uint) ([]FetchedEmail, e
 
 // FetchNewEmailsWithDays fetches emails from an account within specified days (0 means use last sync time or default 30 days)
 func (s *EmailService) FetchNewEmailsWithDays(userID, accountID uint, days int) ([]FetchedEmail, error) {
+	return s.FetchNewEmailsWithOptions(userID, accountID, days, false)
+}
+
+// FetchNewEmailsWithOptions fetches emails with more control options
+// noLimit: if true, don't limit the number of emails fetched (for full sync)
+func (s *EmailService) FetchNewEmailsWithOptions(userID, accountID uint, days int, noLimit bool) ([]FetchedEmail, error) {
 	account, err := s.accountService.GetAccountByIDAndUserID(accountID, userID)
 	if err != nil {
 		return nil, err
@@ -452,8 +458,9 @@ func (s *EmailService) FetchNewEmailsWithDays(userID, accountID uint, days int) 
 
 	// 限制每次同步的邮件数量，避免超时
 	// 只获取最新的邮件（序号最大的）
+	// 如果 noLimit 为 true，则不限制（用于全量同步）
 	const maxSyncEmails = 500
-	if len(seqNums) > maxSyncEmails {
+	if !noLimit && len(seqNums) > maxSyncEmails {
 		s.logService.LogInfo(userID, models.LogModuleEmail, "fetch", "Limiting sync to recent emails", map[string]interface{}{
 			"total":   len(seqNums),
 			"limited": maxSyncEmails,
@@ -1045,45 +1052,103 @@ func (s *EmailService) SyncAllEmails(userID, accountID uint) (int, error) {
 		"email":      account.Email,
 	})
 
-	totalSaved := 0
-	batchNum := 0
-	maxBatches := 100 // 最多 100 批，防止无限循环
+	// 全量同步：一次性获取所有邮件（不限制数量）
+	return s.SyncAndSaveEmailsNoLimit(userID, accountID)
+}
 
-	for batchNum < maxBatches {
-		batchNum++
-		s.logService.LogInfo(userID, models.LogModuleEmail, "full_sync", "Processing batch", map[string]interface{}{
-			"batch":       batchNum,
-			"total_saved": totalSaved,
-		})
+// SyncAndSaveEmailsNoLimit 全量同步，不限制邮件数量
+func (s *EmailService) SyncAndSaveEmailsNoLimit(userID, accountID uint) (int, error) {
+	syncStartedAt := time.Now()
 
-		// 使用 days=-1 获取所有邮件，但 FetchNewEmailsWithDays 内部会限制每次 500 封
-		// 并且会跳过已存在的邮件
-		savedCount, err := s.SyncAndSaveEmailsWithDays(userID, accountID, -1)
-		if err != nil {
-			s.logService.LogError(userID, models.LogModuleEmail, "full_sync", "Batch sync failed", map[string]interface{}{
-				"batch": batchNum,
-				"error": err.Error(),
-			})
-			// 如果已经同步了一些邮件，返回已同步的数量而不是错误
-			if totalSaved > 0 {
-				return totalSaved, nil
-			}
-			return 0, err
-		}
-
-		totalSaved += savedCount
-
-		// 如果这一批没有新邮件，说明已经同步完成
-		if savedCount == 0 {
-			s.logService.LogInfo(userID, models.LogModuleEmail, "full_sync", "Full sync completed", map[string]interface{}{
-				"total_batches": batchNum,
-				"total_saved":   totalSaved,
-			})
-			break
-		}
+	// Ensure account directories exist
+	if err := s.userManager.CreateAccountDirectories(userID, accountID); err != nil {
+		return 0, err
 	}
 
-	return totalSaved, nil
+	// 使用 noLimit=true 获取所有邮件
+	fetchedEmails, err := s.FetchNewEmailsWithOptions(userID, accountID, -1, true)
+	if err != nil {
+		return 0, err
+	}
+
+	s.logService.LogInfo(userID, models.LogModuleEmail, "full_sync", "Fetched emails for full sync", map[string]interface{}{
+		"account_id": accountID,
+		"count":      len(fetchedEmails),
+	})
+
+	savedCount := 0
+	skippedCount := 0
+	for _, fetched := range fetchedEmails {
+		// Check if email already exists
+		var existing models.Email
+		if err := s.db.Where("account_id = ? AND message_id = ?", accountID, fetched.MessageID).First(&existing).Error; err == nil {
+			skippedCount++
+			continue // Email already exists
+		}
+
+		// Save raw email to file
+		rawFilePath, err := s.userStorage.SaveRawEmail(userID, accountID, fetched.MessageID, fetched.RawContent)
+		if err != nil {
+			s.logService.LogError(userID, models.LogModuleEmail, "save_raw", "Failed to save raw email", map[string]interface{}{
+				"message_id": fetched.MessageID,
+				"error":      err.Error(),
+			})
+			continue
+		}
+
+		// Convert To addresses to JSON
+		toAddrsJSON, _ := json.Marshal(fetched.To)
+
+		// Create email record
+		email := &models.Email{
+			AccountID:      accountID,
+			MessageID:      fetched.MessageID,
+			Subject:        fetched.Subject,
+			FromAddr:       fetched.From,
+			ToAddrs:        string(toAddrsJSON),
+			Date:           fetched.Date,
+			Body:           fetched.Body,
+			HTMLBody:       fetched.HTMLBody,
+			HasAttachments: fetched.HasAttachments,
+			IsRead:         false,
+			Folder:         models.FolderInbox,
+			RawFilePath:    rawFilePath,
+		}
+
+		if err := s.db.Create(email).Error; err != nil {
+			s.logService.LogError(userID, models.LogModuleEmail, "save_db", "Failed to save email to database", map[string]interface{}{
+				"message_id": fetched.MessageID,
+				"error":      err.Error(),
+			})
+			continue
+		}
+
+		// Save attachments if any
+		for _, att := range fetched.Attachments {
+			_, err := s.userStorage.SaveAttachment(userID, email.ID, att.Filename, att.Content)
+			if err != nil {
+				s.logService.LogWarn(userID, models.LogModuleEmail, "save_attachment", "Failed to save attachment", map[string]interface{}{
+					"email_id": email.ID,
+					"filename": att.Filename,
+					"error":    err.Error(),
+				})
+			}
+		}
+
+		savedCount++
+	}
+
+	// Update last sync time
+	s.db.Model(&models.EmailAccount{}).Where("id = ?", accountID).Update("last_sync_at", syncStartedAt)
+
+	s.logService.LogInfo(userID, models.LogModuleEmail, "full_sync", "Full sync completed", map[string]interface{}{
+		"account_id":    accountID,
+		"fetched_count": len(fetchedEmails),
+		"saved_count":   savedCount,
+		"skipped_count": skippedCount,
+	})
+
+	return savedCount, nil
 }
 
 // GetEmailByID retrieves an email by ID
