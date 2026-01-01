@@ -34,8 +34,8 @@ func SetupRouter(db *gorm.DB, cfg *config.Config) (*gin.Engine, *middleware.Auth
 	accountService := services.NewAccountService(db, encryptionKey)
 	emailService := services.NewEmailService(db, accountService, userManager)
 
-	// Start sync scheduler (auto sync every 5 seconds for testing)
-	syncScheduler := services.NewSyncScheduler(db, emailService, logService, 5*time.Second)
+	// Start sync scheduler (auto sync every 2 minutes)
+	syncScheduler := services.NewSyncScheduler(db, emailService, logService, 2*time.Minute)
 	syncScheduler.Start()
 
 	// Initialize handlers
