@@ -286,65 +286,29 @@ func (s *EmailService) FetchNewEmailsWithDays(userID, accountID uint, days int) 
 		return []FetchedEmail{}, nil
 	}
 
-	// No limit - fetch all emails using concurrent connections
+	// Use multiple IMAP connections to fetch everything concurrently
+	const numWorkers = 10
+	const batchSize = 100
 
-	// Build sequence set
-	seqSet := new(imap.SeqSet)
-	seqSet.AddNum(seqNums...)
-
-	// Fetch messages - only get envelope and basic info first, not full RFC822
-	// RFC822 can cause parsing errors with non-standard emails
-	items := []imap.FetchItem{imap.FetchUid, imap.FetchEnvelope, imap.FetchBodyStructure, imap.FetchFlags}
-	messages := make(chan *imap.Message, 100)
-	done := make(chan error, 1)
-
-	go func() {
-		done <- c.Fetch(seqSet, items, messages)
-	}()
-
-	// Collect message info first
 	type msgInfo struct {
 		seqNum   uint32
 		uid      uint32
 		envelope *imap.Envelope
-	}
-	var msgInfos []msgInfo
-	for msg := range messages {
-		if msg == nil || msg.Envelope == nil {
-			continue
-		}
-		msgInfos = append(msgInfos, msgInfo{
-			seqNum:   msg.SeqNum,
-			uid:      msg.Uid,
-			envelope: msg.Envelope,
-		})
+		body     []byte
 	}
 
-	if err := <-done; err != nil {
-		s.logService.LogWarn(userID, models.LogModuleEmail, "fetch", "Fetch envelope failed", map[string]interface{}{
-			"error": err.Error(),
-		})
-	}
-
-	s.logService.LogInfo(userID, models.LogModuleEmail, "fetch", "Envelope fetch completed", map[string]interface{}{
-		"account_id":    accountID,
-		"fetched_count": len(msgInfos),
-	})
-
-	// Use multiple IMAP connections to fetch body content concurrently
-	const numWorkers = 5
-	const batchSize = 100
-	var fetchedEmails []FetchedEmail
-	var parseErrors int
-	bodyMap := make(map[uint32][]byte)
-	var bodyMapMu sync.Mutex
-
-	// Split msgInfos into chunks for workers
-	totalMsgs := len(msgInfos)
+	// Split seqNums into chunks for workers
+	totalMsgs := len(seqNums)
 	chunkSize := (totalMsgs + numWorkers - 1) / numWorkers
 
+	resultChan := make(chan []msgInfo, numWorkers)
 	var wg sync.WaitGroup
-	errChan := make(chan error, numWorkers)
+
+	s.logService.LogInfo(userID, models.LogModuleEmail, "fetch", "Starting concurrent fetch", map[string]interface{}{
+		"total_msgs": totalMsgs,
+		"workers":    numWorkers,
+		"chunk_size": chunkSize,
+	})
 
 	for workerIdx := 0; workerIdx < numWorkers; workerIdx++ {
 		start := workerIdx * chunkSize
@@ -355,16 +319,22 @@ func (s *EmailService) FetchNewEmailsWithDays(userID, accountID uint, days int) 
 		if end > totalMsgs {
 			end = totalMsgs
 		}
-		chunk := msgInfos[start:end]
+		chunk := seqNums[start:end]
 
 		wg.Add(1)
-		go func(workerID int, msgs []msgInfo) {
+		go func(workerID int, seqs []uint32) {
 			defer wg.Done()
+
+			var results []msgInfo
 
 			// Create a new IMAP connection for this worker
 			workerClient, err := s.connectIMAP(account)
 			if err != nil {
-				errChan <- fmt.Errorf("worker %d: connect failed: %v", workerID, err)
+				s.logService.LogWarn(userID, models.LogModuleEmail, "fetch", "Worker connect failed", map[string]interface{}{
+					"worker": workerID,
+					"error":  err.Error(),
+				})
+				resultChan <- results
 				return
 			}
 			defer workerClient.Logout()
@@ -372,71 +342,82 @@ func (s *EmailService) FetchNewEmailsWithDays(userID, accountID uint, days int) 
 			// Select INBOX
 			_, err = workerClient.Select("INBOX", false)
 			if err != nil {
-				errChan <- fmt.Errorf("worker %d: select failed: %v", workerID, err)
+				s.logService.LogWarn(userID, models.LogModuleEmail, "fetch", "Worker select failed", map[string]interface{}{
+					"worker": workerID,
+					"error":  err.Error(),
+				})
+				resultChan <- results
 				return
 			}
 
-			section := &imap.BodySectionName{Peek: true}
-			bodyItems := []imap.FetchItem{section.FetchItem()}
-
-			// Process in smaller batches within this worker
-			for i := 0; i < len(msgs); i += batchSize {
+			// Process in batches
+			for i := 0; i < len(seqs); i += batchSize {
 				batchEnd := i + batchSize
-				if batchEnd > len(msgs) {
-					batchEnd = len(msgs)
+				if batchEnd > len(seqs) {
+					batchEnd = len(seqs)
 				}
-				batch := msgs[i:batchEnd]
+				batch := seqs[i:batchEnd]
 
 				batchSeqSet := new(imap.SeqSet)
-				for _, info := range batch {
-					batchSeqSet.AddNum(info.seqNum)
-				}
+				batchSeqSet.AddNum(batch...)
 
-				bodyMessages := make(chan *imap.Message, batchSize)
-				bodyDone := make(chan error, 1)
+				// Fetch envelope + body in one request
+				section := &imap.BodySectionName{Peek: true}
+				items := []imap.FetchItem{imap.FetchUid, imap.FetchEnvelope, section.FetchItem()}
+
+				messages := make(chan *imap.Message, batchSize)
+				done := make(chan error, 1)
 
 				go func() {
-					bodyDone <- workerClient.Fetch(batchSeqSet, bodyItems, bodyMessages)
+					done <- workerClient.Fetch(batchSeqSet, items, messages)
 				}()
 
-				for bodyMsg := range bodyMessages {
-					if bodyMsg == nil {
+				for msg := range messages {
+					if msg == nil || msg.Envelope == nil {
 						continue
 					}
-					for _, literal := range bodyMsg.Body {
-						content, err := io.ReadAll(literal)
-						if err != nil {
-							continue
-						}
-						bodyMapMu.Lock()
-						bodyMap[bodyMsg.SeqNum] = content
-						bodyMapMu.Unlock()
+					info := msgInfo{
+						seqNum:   msg.SeqNum,
+						uid:      msg.Uid,
+						envelope: msg.Envelope,
 					}
+					// Get body
+					for _, literal := range msg.Body {
+						content, err := io.ReadAll(literal)
+						if err == nil {
+							info.body = content
+						}
+					}
+					results = append(results, info)
 				}
-
-				<-bodyDone
+				<-done
 			}
+
+			resultChan <- results
 		}(workerIdx, chunk)
 	}
 
-	wg.Wait()
-	close(errChan)
+	// Wait for all workers and collect results
+	go func() {
+		wg.Wait()
+		close(resultChan)
+	}()
 
-	// Log any worker errors
-	for err := range errChan {
-		s.logService.LogWarn(userID, models.LogModuleEmail, "fetch", "Worker error", map[string]interface{}{
-			"error": err.Error(),
-		})
+	var allMsgInfos []msgInfo
+	for results := range resultChan {
+		allMsgInfos = append(allMsgInfos, results...)
 	}
 
-	s.logService.LogInfo(userID, models.LogModuleEmail, "fetch", "Body fetch completed", map[string]interface{}{
-		"account_id":   accountID,
-		"bodies_count": len(bodyMap),
-		"workers":      numWorkers,
+	s.logService.LogInfo(userID, models.LogModuleEmail, "fetch", "Concurrent fetch completed", map[string]interface{}{
+		"account_id":    accountID,
+		"fetched_count": len(allMsgInfos),
 	})
 
-	// Now build the final email list
-	for _, info := range msgInfos {
+	// Build final email list
+	var fetchedEmails []FetchedEmail
+	var parseErrors int
+
+	for _, info := range allMsgInfos {
 		email := FetchedEmail{
 			UID:     info.uid,
 			Subject: info.envelope.Subject,
@@ -457,15 +438,13 @@ func (s *EmailService) FetchNewEmailsWithDays(userID, accountID uint, days int) 
 			email.To = append(email.To, formatAddress(addr))
 		}
 
-		// Get body content from map
-		if content, ok := bodyMap[info.seqNum]; ok {
-			email.RawContent = content
+		// Parse body content
+		if len(info.body) > 0 {
+			email.RawContent = info.body
 
-			// Parse body content
-			r := bytes.NewReader(content)
+			r := bytes.NewReader(info.body)
 			entity, err := message.Read(r)
 			if err != nil {
-				// Try parsing as plain mail
 				r.Seek(0, io.SeekStart)
 				m, err := mail.ReadMessage(r)
 				if err == nil {
