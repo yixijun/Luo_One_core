@@ -1181,7 +1181,7 @@ func (s *EmailService) SyncAllEmails(userID, accountID uint) (int, error) {
 	return totalSaved, nil
 }
 
-// syncBatchEmails 同步一批邮件
+// syncBatchEmails 同步一批邮件（批量处理）
 func (s *EmailService) syncBatchEmails(userID, accountID uint, account *models.EmailAccount, startSeq, endSeq uint32) (saved, skipped int, err error) {
 	c, err := s.connectIMAP(account)
 	if err != nil {
@@ -1209,6 +1209,10 @@ func (s *EmailService) syncBatchEmails(userID, accountID uint, account *models.E
 		done <- c.Fetch(seqSet, items, messages)
 	}()
 
+	// 收集所有邮件
+	var fetchedEmails []FetchedEmail
+	var messageIDs []string
+
 	for msg := range messages {
 		if msg == nil || msg.Envelope == nil {
 			continue
@@ -1218,13 +1222,6 @@ func (s *EmailService) syncBatchEmails(userID, accountID uint, account *models.E
 		messageID := msg.Envelope.MessageId
 		if messageID == "" {
 			messageID = fmt.Sprintf("uid:%d", msg.Uid)
-		}
-
-		// 检查是否已存在
-		var existing models.Email
-		if err := s.db.Where("account_id = ? AND message_id = ?", accountID, messageID).First(&existing).Error; err == nil {
-			skipped++
-			continue
 		}
 
 		// 解析邮件内容
@@ -1262,7 +1259,33 @@ func (s *EmailService) syncBatchEmails(userID, accountID uint, account *models.E
 			}
 		}
 
-		// 保存邮件
+		fetchedEmails = append(fetchedEmails, email)
+		messageIDs = append(messageIDs, messageID)
+	}
+
+	<-done
+
+	if len(fetchedEmails) == 0 {
+		return 0, 0, nil
+	}
+
+	// 批量查询已存在的邮件
+	existingIDs := make(map[string]bool)
+	var existingEmails []models.Email
+	s.db.Select("message_id").Where("account_id = ? AND message_id IN ?", accountID, messageIDs).Find(&existingEmails)
+	for _, e := range existingEmails {
+		existingIDs[e.MessageID] = true
+	}
+
+	// 批量保存新邮件
+	var emailsToSave []*models.Email
+	for _, email := range fetchedEmails {
+		if existingIDs[email.MessageID] {
+			skipped++
+			continue
+		}
+
+		// 保存原始邮件文件
 		rawFilePath, err := s.userStorage.SaveRawEmail(userID, accountID, email.MessageID, email.RawContent)
 		if err != nil {
 			continue
@@ -1283,14 +1306,17 @@ func (s *EmailService) syncBatchEmails(userID, accountID uint, account *models.E
 			Folder:         models.FolderInbox,
 			RawFilePath:    rawFilePath,
 		}
-
-		if err := s.db.Create(emailRecord).Error; err != nil {
-			continue
-		}
-		saved++
+		emailsToSave = append(emailsToSave, emailRecord)
 	}
 
-	<-done
+	// 批量插入数据库
+	if len(emailsToSave) > 0 {
+		if err := s.db.CreateInBatches(emailsToSave, 100).Error; err != nil {
+			return 0, skipped, err
+		}
+		saved = len(emailsToSave)
+	}
+
 	return saved, skipped, nil
 }
 
