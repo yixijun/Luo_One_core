@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"mime"
 	"net"
 	"net/http"
 	"net/mail"
@@ -897,10 +898,25 @@ func (s *EmailService) parseMessageEntity(entity *message.Entity, email *Fetched
 	} else if params["name"] != "" || entity.Header.Get("Content-Disposition") != "" {
 		// This is an attachment
 		content, _ := io.ReadAll(entity.Body)
+		
+		// 尝试从多个来源获取文件名
 		filename := params["name"]
+		if filename == "" {
+			// 尝试从 Content-Disposition 头获取文件名
+			disposition := entity.Header.Get("Content-Disposition")
+			if disposition != "" {
+				_, dispParams, err := mime.ParseMediaType(disposition)
+				if err == nil {
+					if fn, ok := dispParams["filename"]; ok && fn != "" {
+						filename = fn
+					}
+				}
+			}
+		}
 		if filename == "" {
 			filename = "attachment"
 		}
+		
 		email.Attachments = append(email.Attachments, FetchedAttachment{
 			Filename:    filename,
 			ContentType: mediaType,
