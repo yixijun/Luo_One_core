@@ -157,8 +157,8 @@ func (s *EmailService) connectIMAP(account *models.EmailAccount) (*client.Client
 		}
 	}
 
-	// 设置命令超时为 30 秒
-	c.Timeout = 30 * time.Second
+	// 设置命令超时为 5 分钟（全量同步需要更长时间）
+	c.Timeout = 5 * time.Minute
 
 	// Send IMAP ID command for servers that require client identification (e.g., 188.com, 163.com)
 	// This must be done before login for some email providers
@@ -623,8 +623,9 @@ func (s *EmailService) FetchNewEmailsWithOptions(userID, accountID uint, days in
 
 	// 第三步：只为新邮件获取 body
 	// 限制并发获取 body 的数量，避免超时
+	// 如果 noLimit 为 true，则不限制（用于全量同步）
 	const maxBodyFetch = 200
-	if len(newMsgInfos) > maxBodyFetch {
+	if !noLimit && len(newMsgInfos) > maxBodyFetch {
 		// 只获取最新的 maxBodyFetch 封邮件的 body
 		// 按 UID 排序，取最大的（最新的）
 		// 简单处理：只取前 maxBodyFetch 个
