@@ -390,16 +390,40 @@ func (s *EmailService) FetchNewEmailsWithDays(userID, accountID uint, days int) 
 		"envelope_count": len(allMsgInfos),
 	})
 
-	// 第二步：过滤出新邮件（数据库中不存在的）
-	var newMsgInfos []msgInfo
+	// 第二步：批量查询数据库，过滤出新邮件
+	// 先收集所有 messageID
+	msgIDToInfo := make(map[string]msgInfo)
+	var allMessageIDs []string
 	for _, info := range allMsgInfos {
 		messageID := info.envelope.MessageId
 		if messageID == "" {
 			messageID = fmt.Sprintf("uid:%d", info.uid)
 		}
-		var count int64
-		s.db.Model(&models.Email{}).Where("account_id = ? AND message_id = ?", accountID, messageID).Count(&count)
-		if count == 0 {
+		msgIDToInfo[messageID] = info
+		allMessageIDs = append(allMessageIDs, messageID)
+	}
+
+	// 批量查询已存在的邮件（每批500个）
+	existingIDs := make(map[string]bool)
+	const dbBatchSize = 500
+	for i := 0; i < len(allMessageIDs); i += dbBatchSize {
+		end := i + dbBatchSize
+		if end > len(allMessageIDs) {
+			end = len(allMessageIDs)
+		}
+		batch := allMessageIDs[i:end]
+		
+		var existingEmails []models.Email
+		s.db.Select("message_id").Where("account_id = ? AND message_id IN ?", accountID, batch).Find(&existingEmails)
+		for _, e := range existingEmails {
+			existingIDs[e.MessageID] = true
+		}
+	}
+
+	// 过滤出新邮件
+	var newMsgInfos []msgInfo
+	for messageID, info := range msgIDToInfo {
+		if !existingIDs[messageID] {
 			newMsgInfos = append(newMsgInfos, info)
 		}
 	}
