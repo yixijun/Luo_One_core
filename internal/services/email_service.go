@@ -1051,16 +1051,44 @@ func (s *EmailService) SyncAndSaveEmailsWithDays(userID, accountID uint, days in
 			continue
 		}
 
+		// 记录邮件保存信息（包含附件详情）
+		s.logService.LogInfo(userID, models.LogModuleEmail, "sync_save", "Email saved to database", map[string]interface{}{
+			"email_id":         email.ID,
+			"message_id":       fetched.MessageID,
+			"has_attachments":  fetched.HasAttachments,
+			"attachment_count": len(fetched.Attachments),
+			"raw_content_size": len(fetched.RawContent),
+			"raw_file_path":    rawFilePath,
+		})
+
 		// Save attachments if any
+		attachmentsSaved := 0
 		for _, att := range fetched.Attachments {
+			s.logService.LogInfo(userID, models.LogModuleEmail, "sync_attachment", "Saving attachment", map[string]interface{}{
+				"email_id":     email.ID,
+				"filename":     att.Filename,
+				"content_type": att.ContentType,
+				"size":         len(att.Content),
+			})
 			_, err := s.userStorage.SaveAttachment(userID, email.ID, att.Filename, att.Content)
 			if err != nil {
-				s.logService.LogWarn(userID, models.LogModuleEmail, "save_attachment", "Failed to save attachment", map[string]interface{}{
+				s.logService.LogWarn(userID, models.LogModuleEmail, "sync_attachment", "Failed to save attachment", map[string]interface{}{
 					"email_id": email.ID,
 					"filename": att.Filename,
 					"error":    err.Error(),
 				})
+			} else {
+				attachmentsSaved++
 			}
+		}
+		
+		if fetched.HasAttachments {
+			s.logService.LogInfo(userID, models.LogModuleEmail, "sync_attachment_summary", "Attachment save summary", map[string]interface{}{
+				"email_id":          email.ID,
+				"expected":          len(fetched.Attachments),
+				"saved":             attachmentsSaved,
+				"has_attachments":   fetched.HasAttachments,
+			})
 		}
 
 		savedCount++
@@ -2359,12 +2387,27 @@ func (s *EmailService) ListAttachments(userID, emailID uint) ([]AttachmentInfo, 
 		return nil, err
 	}
 
+	s.logService.LogInfo(userID, models.LogModuleEmail, "list_attachments", "Starting to list attachments", map[string]interface{}{
+		"email_id":        emailID,
+		"has_attachments": email.HasAttachments,
+		"raw_file_path":   email.RawFilePath,
+	})
+
 	// List attachments from file system
 	filenames, err := s.userStorage.ListAttachments(userID, emailID)
 	if err != nil {
+		s.logService.LogWarn(userID, models.LogModuleEmail, "list_attachments", "Failed to list attachments from storage", map[string]interface{}{
+			"email_id": emailID,
+			"error":    err.Error(),
+		})
 		// 目录不存在等错误，返回空列表
 		filenames = []string{}
 	}
+
+	s.logService.LogInfo(userID, models.LogModuleEmail, "list_attachments", "Found attachments in storage", map[string]interface{}{
+		"email_id": emailID,
+		"count":    len(filenames),
+	})
 
 	// 如果文件系统中有附件，直接返回
 	if len(filenames) > 0 {
@@ -2384,6 +2427,11 @@ func (s *EmailService) ListAttachments(userID, emailID uint) ([]AttachmentInfo, 
 
 	// 如果邮件标记有附件但文件系统中没有，尝试从原始邮件解析
 	if email.HasAttachments {
+		s.logService.LogInfo(userID, models.LogModuleEmail, "list_attachments", "Trying to parse attachments from raw email", map[string]interface{}{
+			"email_id":      emailID,
+			"raw_file_path": email.RawFilePath,
+		})
+		
 		// 尝试从原始邮件解析附件
 		attachments, parseErr := s.ParseAndSaveAttachments(userID, emailID)
 		if parseErr != nil {
