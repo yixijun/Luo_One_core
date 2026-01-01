@@ -2359,36 +2359,49 @@ func (s *EmailService) ListAttachments(userID, emailID uint) ([]AttachmentInfo, 
 		return nil, err
 	}
 
-	// List attachments
+	// List attachments from file system
 	filenames, err := s.userStorage.ListAttachments(userID, emailID)
 	if err != nil {
-		return nil, err
+		// 目录不存在等错误，返回空列表
+		filenames = []string{}
+	}
+
+	// 如果文件系统中有附件，直接返回
+	if len(filenames) > 0 {
+		var attachments []AttachmentInfo
+		for _, filename := range filenames {
+			content, err := s.userStorage.GetAttachment(userID, emailID, filename)
+			if err != nil {
+				continue
+			}
+			attachments = append(attachments, AttachmentInfo{
+				Filename: filename,
+				Size:     int64(len(content)),
+			})
+		}
+		return attachments, nil
 	}
 
 	// 如果邮件标记有附件但文件系统中没有，尝试从原始邮件解析
-	if len(filenames) == 0 && email.HasAttachments {
+	if email.HasAttachments {
 		// 尝试从原始邮件解析附件
 		attachments, parseErr := s.ParseAndSaveAttachments(userID, emailID)
-		if parseErr == nil && len(attachments) > 0 {
-			return attachments, nil
+		if parseErr != nil {
+			// 解析失败，记录日志但不返回错误
+			s.logService.LogWarn(userID, models.LogModuleEmail, "list_attachments", "Failed to parse attachments from raw email", map[string]interface{}{
+				"email_id": emailID,
+				"error":    parseErr.Error(),
+			})
+			// 如果原始邮件不存在，更新 has_attachments 为 false
+			if email.RawFilePath == "" {
+				s.db.Model(&models.Email{}).Where("id = ?", emailID).Update("has_attachments", false)
+			}
+			return []AttachmentInfo{}, nil
 		}
-		// 如果解析失败，返回空列表
-		return []AttachmentInfo{}, nil
+		return attachments, nil
 	}
 
-	var attachments []AttachmentInfo
-	for _, filename := range filenames {
-		content, err := s.userStorage.GetAttachment(userID, emailID, filename)
-		if err != nil {
-			continue
-		}
-		attachments = append(attachments, AttachmentInfo{
-			Filename: filename,
-			Size:     int64(len(content)),
-		})
-	}
-
-	return attachments, nil
+	return []AttachmentInfo{}, nil
 }
 
 // DeleteAttachment deletes an attachment
