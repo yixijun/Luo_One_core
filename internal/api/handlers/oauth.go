@@ -35,9 +35,10 @@ type StateStore struct {
 
 // OAuthState represents the state of an OAuth flow
 type OAuthState struct {
-	UserID    uint
-	Provider  string
-	CreatedAt time.Time
+	UserID      uint
+	Provider    string
+	DisplayName string
+	CreatedAt   time.Time
 }
 
 // NewOAuthHandler creates a new OAuthHandler
@@ -136,6 +137,9 @@ func (h *OAuthHandler) GetGoogleAuthURL(c *gin.Context) {
 		return
 	}
 
+	// 获取前端传递的昵称
+	displayName := c.Query("display_name")
+
 	config, err := h.getGoogleOAuthConfigForUser(userID)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{
@@ -172,12 +176,13 @@ func (h *OAuthHandler) GetGoogleAuthURL(c *gin.Context) {
 		return
 	}
 
-	// Store state
+	// Store state with display name
 	h.stateStore.mu.Lock()
 	h.stateStore.states[state] = &OAuthState{
-		UserID:    userID,
-		Provider:  "google",
-		CreatedAt: time.Now(),
+		UserID:      userID,
+		Provider:    "google",
+		DisplayName: displayName,
+		CreatedAt:   time.Now(),
 	}
 	h.stateStore.mu.Unlock()
 
@@ -256,10 +261,14 @@ func (h *OAuthHandler) GoogleCallback(c *gin.Context) {
 	}
 
 	// Create or update account
+	displayName := oauthState.DisplayName
+	if displayName == "" {
+		displayName = email
+	}
 	account := &models.EmailAccount{
 		UserID:           oauthState.UserID,
 		Email:            email,
-		DisplayName:      email,
+		DisplayName:      displayName,
 		IMAPHost:         "imap.gmail.com",
 		IMAPPort:         993,
 		SMTPHost:         "smtp.gmail.com",
