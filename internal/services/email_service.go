@@ -287,10 +287,22 @@ func (s *EmailService) FetchNewEmailsWithDays(userID, accountID uint, days int) 
 		return []FetchedEmail{}, nil
 	}
 
-	// 第一步：快速获取所有邮件的 envelope（元数据）
+	// 限制每次同步的邮件数量，避免超时
+	// 只获取最新的邮件（序号最大的）
+	const maxSyncEmails = 500
+	if len(seqNums) > maxSyncEmails {
+		s.logService.LogInfo(userID, models.LogModuleEmail, "fetch", "Limiting sync to recent emails", map[string]interface{}{
+			"total":   len(seqNums),
+			"limited": maxSyncEmails,
+		})
+		// 取最后 maxSyncEmails 个（最新的邮件）
+		seqNums = seqNums[len(seqNums)-maxSyncEmails:]
+	}
+
+	// 第一步：快速获取邮件的 envelope（元数据）
 	// 使用多连接并发获取，不获取 body
-	const numWorkers = 10
-	const batchSize = 100
+	const numWorkers = 5
+	const batchSize = 50
 
 	type msgInfo struct {
 		seqNum   uint32
