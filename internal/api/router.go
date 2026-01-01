@@ -52,7 +52,7 @@ func SetupRouter(db *gorm.DB, cfg *config.Config) (*gin.Engine, *middleware.Auth
 	// Initialize handlers
 	authHandler := handlers.NewAuthHandler(userService, authManager.JWTManager, logService)
 	userHandler := handlers.NewUserHandler(userService, logService)
-	accountHandler := handlers.NewAccountHandler(accountService, logService)
+	accountHandler := handlers.NewAccountHandler(accountService, logService, db)
 	emailHandler := handlers.NewEmailHandler(emailService, logService)
 	settingsHandler := handlers.NewSettingsHandler(userService, logService)
 	oauthHandler := handlers.NewOAuthHandler(accountService, userService)

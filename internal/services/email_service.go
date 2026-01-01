@@ -1048,13 +1048,55 @@ func (s *EmailService) SyncAllEmails(userID, accountID uint) (int, error) {
 		return 0, err
 	}
 
-	s.logService.LogInfo(userID, models.LogModuleEmail, "full_sync", "Starting full sync", map[string]interface{}{
+	s.logService.LogInfo(userID, models.LogModuleEmail, "full_sync", "Starting full sync (batch mode)", map[string]interface{}{
 		"account_id": accountID,
 		"email":      account.Email,
 	})
 
-	// 全量同步：一次性获取所有邮件（不限制数量）
-	return s.SyncAndSaveEmailsNoLimit(userID, accountID)
+	totalSaved := 0
+	batchNum := 0
+	maxBatches := 50 // 最多 50 批，每批 500 封，共 25000 封
+
+	for batchNum < maxBatches {
+		batchNum++
+		s.logService.LogInfo(userID, models.LogModuleEmail, "full_sync", "Processing batch", map[string]interface{}{
+			"batch":       batchNum,
+			"total_saved": totalSaved,
+		})
+
+		// 每批使用普通同步（有 500 封限制），但使用 days=-1 获取所有时间范围
+		savedCount, err := s.SyncAndSaveEmailsWithDays(userID, accountID, -1)
+		if err != nil {
+			s.logService.LogError(userID, models.LogModuleEmail, "full_sync", "Batch sync failed", map[string]interface{}{
+				"batch": batchNum,
+				"error": err.Error(),
+			})
+			// 如果已经同步了一些邮件，返回已同步的数量
+			if totalSaved > 0 {
+				return totalSaved, nil
+			}
+			return 0, err
+		}
+
+		totalSaved += savedCount
+
+		// 如果这一批没有新邮件，说明已经同步完成
+		if savedCount == 0 {
+			s.logService.LogInfo(userID, models.LogModuleEmail, "full_sync", "Full sync completed", map[string]interface{}{
+				"total_batches": batchNum,
+				"total_saved":   totalSaved,
+			})
+			break
+		}
+
+		s.logService.LogInfo(userID, models.LogModuleEmail, "full_sync", "Batch completed", map[string]interface{}{
+			"batch":       batchNum,
+			"saved":       savedCount,
+			"total_saved": totalSaved,
+		})
+	}
+
+	return totalSaved, nil
 }
 
 // SyncAndSaveEmailsNoLimit 全量同步，不限制邮件数量

@@ -189,6 +189,39 @@ func (s *AccountService) GetAccountsByUserID(userID uint) ([]models.EmailAccount
 	return accounts, nil
 }
 
+// GetEmailCountsByAccountIDs returns the email count for each account
+func (s *AccountService) GetEmailCountsByAccountIDs(accounts []models.EmailAccount) map[uint]int64 {
+	result := make(map[uint]int64)
+	if len(accounts) == 0 {
+		return result
+	}
+
+	// 收集所有账户 ID
+	var accountIDs []uint
+	for _, acc := range accounts {
+		accountIDs = append(accountIDs, acc.ID)
+		result[acc.ID] = 0 // 初始化为 0
+	}
+
+	// 批量查询每个账户的邮件数量
+	type countResult struct {
+		AccountID uint
+		Count     int64
+	}
+	var counts []countResult
+	s.db.Model(&models.Email{}).
+		Select("account_id, count(*) as count").
+		Where("account_id IN ?", accountIDs).
+		Group("account_id").
+		Scan(&counts)
+
+	for _, c := range counts {
+		result[c.AccountID] = c.Count
+	}
+
+	return result
+}
+
 // UpdateAccountInput represents the input for updating an email account
 type UpdateAccountInput struct {
 	DisplayName string

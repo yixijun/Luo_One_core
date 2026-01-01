@@ -8,19 +8,22 @@ import (
 	"github.com/luo-one/core/internal/api/middleware"
 	"github.com/luo-one/core/internal/database/models"
 	"github.com/luo-one/core/internal/services"
+	"gorm.io/gorm"
 )
 
 // AccountHandler handles email account related requests
 type AccountHandler struct {
 	accountService *services.AccountService
 	logService     *services.LogService
+	db             *gorm.DB
 }
 
 // NewAccountHandler creates a new AccountHandler instance
-func NewAccountHandler(accountService *services.AccountService, logService *services.LogService) *AccountHandler {
+func NewAccountHandler(accountService *services.AccountService, logService *services.LogService, db *gorm.DB) *AccountHandler {
 	return &AccountHandler{
 		accountService: accountService,
 		logService:     logService,
+		db:             db,
 	}
 }
 
@@ -66,11 +69,12 @@ type AccountResponse struct {
 	SyncDays    int    `json:"sync_days"`
 	LastSyncAt  int64  `json:"last_sync_at"`
 	CreatedAt   int64  `json:"created_at"`
+	EmailCount  int64  `json:"email_count"`
 }
 
 
 // toAccountResponse converts an EmailAccount model to AccountResponse
-func toAccountResponse(account *models.EmailAccount) AccountResponse {
+func toAccountResponse(account *models.EmailAccount, emailCount int64) AccountResponse {
 	return AccountResponse{
 		ID:          account.ID,
 		Email:       account.Email,
@@ -85,6 +89,7 @@ func toAccountResponse(account *models.EmailAccount) AccountResponse {
 		SyncDays:    account.SyncDays,
 		LastSyncAt:  account.LastSyncAt.Unix(),
 		CreatedAt:   account.CreatedAt.Unix(),
+		EmailCount:  emailCount,
 	}
 }
 
@@ -115,9 +120,13 @@ func (h *AccountHandler) ListAccounts(c *gin.Context) {
 		return
 	}
 
+	// 获取每个账户的邮件数量
+	emailCounts := h.accountService.GetEmailCountsByAccountIDs(accounts)
+
 	var response []AccountResponse
 	for _, account := range accounts {
-		response = append(response, toAccountResponse(&account))
+		emailCount := emailCounts[account.ID]
+		response = append(response, toAccountResponse(&account, emailCount))
 	}
 
 	c.JSON(http.StatusOK, gin.H{
@@ -192,7 +201,7 @@ func (h *AccountHandler) CreateAccount(c *gin.Context) {
 
 	c.JSON(http.StatusCreated, gin.H{
 		"success": true,
-		"data":    toAccountResponse(account),
+		"data":    toAccountResponse(account, 0),
 	})
 }
 
@@ -246,9 +255,13 @@ func (h *AccountHandler) GetAccount(c *gin.Context) {
 		return
 	}
 
+	// 获取该账户的邮件数量
+	var emailCount int64
+	h.db.Model(&models.Email{}).Where("account_id = ?", account.ID).Count(&emailCount)
+
 	c.JSON(http.StatusOK, gin.H{
 		"success": true,
-		"data":    toAccountResponse(account),
+		"data":    toAccountResponse(account, emailCount),
 	})
 }
 
@@ -326,9 +339,13 @@ func (h *AccountHandler) UpdateAccount(c *gin.Context) {
 		return
 	}
 
+	// 获取该账户的邮件数量
+	var emailCount int64
+	h.db.Model(&models.Email{}).Where("account_id = ?", account.ID).Count(&emailCount)
+
 	c.JSON(http.StatusOK, gin.H{
 		"success": true,
-		"data":    toAccountResponse(account),
+		"data":    toAccountResponse(account, emailCount),
 	})
 }
 
@@ -549,9 +566,13 @@ func (h *AccountHandler) EnableAccount(c *gin.Context) {
 		return
 	}
 
+	// 获取该账户的邮件数量
+	var emailCount int64
+	h.db.Model(&models.Email{}).Where("account_id = ?", account.ID).Count(&emailCount)
+
 	c.JSON(http.StatusOK, gin.H{
 		"success": true,
-		"data":    toAccountResponse(account),
+		"data":    toAccountResponse(account, emailCount),
 	})
 }
 
@@ -604,8 +625,12 @@ func (h *AccountHandler) DisableAccount(c *gin.Context) {
 		return
 	}
 
+	// 获取该账户的邮件数量
+	var emailCount int64
+	h.db.Model(&models.Email{}).Where("account_id = ?", account.ID).Count(&emailCount)
+
 	c.JSON(http.StatusOK, gin.H{
 		"success": true,
-		"data":    toAccountResponse(account),
+		"data":    toAccountResponse(account, emailCount),
 	})
 }
