@@ -44,10 +44,6 @@ func (s *SyncScheduler) Start() {
 	log.Printf("[SyncScheduler] Starting with interval: %v", s.interval)
 
 	go func() {
-		// 启动后等待 10 秒再开始第一次同步
-		log.Println("[SyncScheduler] Waiting 10 seconds before first sync...")
-		time.Sleep(10 * time.Second)
-		
 		// 立即执行第一次同步
 		log.Println("[SyncScheduler] Running first sync...")
 		s.syncAllAccounts()
