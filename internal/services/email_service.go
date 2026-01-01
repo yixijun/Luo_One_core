@@ -169,56 +169,144 @@ func (s *EmailService) FetchNewEmailsWithDays(userID, accountID uint, days int) 
 		return []FetchedEmail{}, nil
 	}
 
-	criteria := imap.NewSearchCriteria()
+	// Determine fetch strategy based on days parameter
+	// days == -1: fetch all emails
+	// days == 0: incremental sync (use sequence numbers for reliability)
+	// days > 0: fetch emails from last N days
+	var uids []uint32
+	var useSequenceRange bool
+	var seqSet *imap.SeqSet
+
 	if days == -1 {
-		s.logService.LogInfo(userID, models.LogModuleEmail, "fetch", "Fetching all emails", map[string]interface{}{
+		// Fetch all emails - use sequence range for maximum compatibility
+		s.logService.LogInfo(userID, models.LogModuleEmail, "fetch", "Fetching all emails using sequence range", map[string]interface{}{
 			"total": mbox.Messages,
 		})
+		useSequenceRange = true
+		seqSet = new(imap.SeqSet)
+		seqSet.AddRange(1, mbox.Messages)
 	} else if days == 0 {
-		if !account.LastSyncAt.IsZero() {
-			criteria.Since = account.LastSyncAt
-			s.logService.LogInfo(userID, models.LogModuleEmail, "fetch", "Incremental sync", map[string]interface{}{
-				"since": account.LastSyncAt,
-			})
-		} else {
+		// Incremental sync - fetch emails we don't have yet
+		// For better compatibility with QQ/163 mail, use sequence numbers instead of SEARCH SINCE
+		var existingCount int64
+		_ = s.db.Model(&models.Email{}).Where("account_id = ?", accountID).Count(&existingCount).Error
+
+		if existingCount == 0 || account.LastSyncAt.IsZero() {
+			// First sync - fetch all
 			s.logService.LogInfo(userID, models.LogModuleEmail, "fetch", "First sync, fetching all emails", map[string]interface{}{
 				"total": mbox.Messages,
 			})
+			useSequenceRange = true
+			seqSet = new(imap.SeqSet)
+			seqSet.AddRange(1, mbox.Messages)
+		} else {
+			// Incremental sync - try SEARCH first, fallback to sequence range if empty
+			criteria := imap.NewSearchCriteria()
+			// Use date only (not time) for SINCE to improve compatibility
+			sinceDate := account.LastSyncAt.AddDate(0, 0, -1) // Go back 1 day to avoid timezone issues
+			criteria.Since = time.Date(sinceDate.Year(), sinceDate.Month(), sinceDate.Day(), 0, 0, 0, 0, time.UTC)
+
+			s.logService.LogInfo(userID, models.LogModuleEmail, "fetch", "Incremental sync with SEARCH", map[string]interface{}{
+				"since": criteria.Since,
+			})
+
+			uids, err = c.UidSearch(criteria)
+			if err != nil {
+				s.logService.LogWarn(userID, models.LogModuleEmail, "fetch", "SEARCH failed, using sequence range fallback", map[string]interface{}{
+					"error": err.Error(),
+				})
+				// Fallback to fetching recent messages
+				useSequenceRange = true
+				seqSet = new(imap.SeqSet)
+				// Fetch last 100 messages or all if less
+				start := uint32(1)
+				if mbox.Messages > 100 {
+					start = mbox.Messages - 99
+				}
+				seqSet.AddRange(start, mbox.Messages)
+			} else if len(uids) == 0 {
+				// SEARCH returned empty - this happens with some mail servers (QQ, 163)
+				// Fallback to fetching recent messages by sequence number
+				s.logService.LogInfo(userID, models.LogModuleEmail, "fetch", "SEARCH returned empty, using sequence range fallback", map[string]interface{}{
+					"total_messages": mbox.Messages,
+				})
+				useSequenceRange = true
+				seqSet = new(imap.SeqSet)
+				// Fetch last 100 messages or all if less
+				start := uint32(1)
+				if mbox.Messages > 100 {
+					start = mbox.Messages - 99
+				}
+				seqSet.AddRange(start, mbox.Messages)
+			}
 		}
 	} else {
-		criteria.Since = time.Now().AddDate(0, 0, -days)
+		// Fetch emails from last N days
+		criteria := imap.NewSearchCriteria()
+		sinceDate := time.Now().AddDate(0, 0, -days)
+		criteria.Since = time.Date(sinceDate.Year(), sinceDate.Month(), sinceDate.Day(), 0, 0, 0, 0, time.UTC)
+
 		s.logService.LogInfo(userID, models.LogModuleEmail, "fetch", "Fetching emails by days", map[string]interface{}{
 			"days":  days,
 			"since": criteria.Since,
 		})
-	}
 
-	uids, err := c.UidSearch(criteria)
-	if err != nil {
-		return nil, fmt.Errorf("failed to uid search messages: %v", err)
-	}
-	if len(uids) == 0 && days == 0 && !account.LastSyncAt.IsZero() {
-		var existingCount int64
-		_ = s.db.Model(&models.Email{}).Where("account_id = ?", accountID).Count(&existingCount).Error
-		if existingCount == 0 {
-			uids, err = c.UidSearch(imap.NewSearchCriteria())
-			if err != nil {
-				return nil, fmt.Errorf("failed to uid search messages: %v", err)
+		uids, err = c.UidSearch(criteria)
+		if err != nil {
+			s.logService.LogWarn(userID, models.LogModuleEmail, "fetch", "SEARCH by days failed, using sequence range fallback", map[string]interface{}{
+				"error": err.Error(),
+			})
+			// Fallback: estimate messages based on average 5 emails per day
+			useSequenceRange = true
+			seqSet = new(imap.SeqSet)
+			estimatedCount := uint32(days * 5)
+			if estimatedCount > mbox.Messages {
+				estimatedCount = mbox.Messages
 			}
+			start := uint32(1)
+			if mbox.Messages > estimatedCount {
+				start = mbox.Messages - estimatedCount + 1
+			}
+			seqSet.AddRange(start, mbox.Messages)
+		} else if len(uids) == 0 {
+			// SEARCH returned empty - fallback to sequence range
+			s.logService.LogInfo(userID, models.LogModuleEmail, "fetch", "SEARCH by days returned empty, using sequence range fallback", nil)
+			useSequenceRange = true
+			seqSet = new(imap.SeqSet)
+			estimatedCount := uint32(days * 5)
+			if estimatedCount > mbox.Messages {
+				estimatedCount = mbox.Messages
+			}
+			start := uint32(1)
+			if mbox.Messages > estimatedCount {
+				start = mbox.Messages - estimatedCount + 1
+			}
+			seqSet.AddRange(start, mbox.Messages)
 		}
 	}
 
-	s.logService.LogInfo(userID, models.LogModuleEmail, "fetch", "Search completed", map[string]interface{}{
-		"account_id": accountID,
-		"found_uids": len(uids),
-	})
+	// Log fetch info
+	if useSequenceRange {
+		s.logService.LogInfo(userID, models.LogModuleEmail, "fetch", "Using sequence range fetch", map[string]interface{}{
+			"account_id": accountID,
+		})
+	} else {
+		s.logService.LogInfo(userID, models.LogModuleEmail, "fetch", "Search completed", map[string]interface{}{
+			"account_id": accountID,
+			"found_uids": len(uids),
+		})
+	}
 
-	if len(uids) == 0 {
+	// Prepare for fetch
+	if !useSequenceRange && len(uids) == 0 {
 		return []FetchedEmail{}, nil
 	}
 
-	seqSet := new(imap.SeqSet)
-	seqSet.AddNum(uids...)
+	// Build sequence set for UID fetch if not using sequence range
+	if !useSequenceRange {
+		seqSet = new(imap.SeqSet)
+		seqSet.AddNum(uids...)
+	}
 
 	// Fetch messages
 	items := []imap.FetchItem{imap.FetchUid, imap.FetchEnvelope, imap.FetchRFC822, imap.FetchBodyStructure}
@@ -226,7 +314,13 @@ func (s *EmailService) FetchNewEmailsWithDays(userID, accountID uint, days int) 
 	done := make(chan error, 1)
 
 	go func() {
-		done <- c.UidFetch(seqSet, items, messages)
+		if useSequenceRange {
+			// Use regular Fetch for sequence numbers
+			done <- c.Fetch(seqSet, items, messages)
+		} else {
+			// Use UidFetch for UIDs
+			done <- c.UidFetch(seqSet, items, messages)
+		}
 	}()
 
 	var fetchedEmails []FetchedEmail
