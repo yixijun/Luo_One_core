@@ -202,12 +202,37 @@ func (s *EmailService) FetchNewEmailsWithDays(userID, accountID uint, days int) 
 	s.logService.LogInfo(userID, models.LogModuleEmail, "fetch", "INBOX selected", map[string]interface{}{
 		"account_id":     accountID,
 		"total_messages": mbox.Messages,
+		"uidnext":        mbox.UidNext,
 		"last_sync_at":   account.LastSyncAt,
 		"fetch_days":     days,
 	})
 
 	if mbox.Messages == 0 {
 		return []FetchedEmail{}, nil
+	}
+
+	// 快速检查：增量同步时，先检查是否有新邮件
+	// 通过比较数据库中最大的 UID 和服务器的 UIDNEXT
+	if days == 0 && !account.LastSyncAt.IsZero() {
+		var maxUID uint32
+		var lastEmail models.Email
+		if err := s.db.Where("account_id = ?", accountID).Order("id DESC").First(&lastEmail).Error; err == nil {
+			// 从 message_id 中提取 UID（如果是 uid:xxx 格式）
+			if strings.HasPrefix(lastEmail.MessageID, "uid:") {
+				if uid, err := strconv.ParseUint(strings.TrimPrefix(lastEmail.MessageID, "uid:"), 10, 32); err == nil {
+					maxUID = uint32(uid)
+				}
+			}
+		}
+		
+		// 如果本地最大 UID 接近服务器的 UIDNEXT，说明没有新邮件
+		if maxUID > 0 && mbox.UidNext > 0 && maxUID >= mbox.UidNext-1 {
+			s.logService.LogInfo(userID, models.LogModuleEmail, "fetch", "No new emails (UID check)", map[string]interface{}{
+				"local_max_uid": maxUID,
+				"server_uidnext": mbox.UidNext,
+			})
+			return []FetchedEmail{}, nil
+		}
 	}
 
 	// Determine search criteria based on days parameter
