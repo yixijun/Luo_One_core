@@ -3,6 +3,7 @@ package api
 import (
 	"time"
 
+	"github.com/gin-contrib/cors"
 	"github.com/gin-gonic/gin"
 	"github.com/luo-one/core/internal/api/handlers"
 	"github.com/luo-one/core/internal/api/middleware"
@@ -15,6 +16,16 @@ import (
 // SetupRouter initializes and returns the Gin router with all routes configured
 func SetupRouter(db *gorm.DB, cfg *config.Config) (*gin.Engine, *middleware.AuthManager, error) {
 	router := gin.Default()
+
+	// 配置 CORS - 允许跨域请求
+	router.Use(cors.New(cors.Config{
+		AllowOrigins:     []string{"*"},
+		AllowMethods:     []string{"GET", "POST", "PUT", "DELETE", "OPTIONS"},
+		AllowHeaders:     []string{"Origin", "Content-Type", "Authorization", "X-API-Key"},
+		ExposeHeaders:    []string{"Content-Length"},
+		AllowCredentials: true,
+		MaxAge:           12 * time.Hour,
+	}))
 
 	// Initialize auth manager
 	authManager, err := middleware.NewAuthManager(cfg.DataDir, cfg.JWTSecret, middleware.DefaultTokenExpiry)
