@@ -328,10 +328,59 @@ func (s *EmailService) FetchNewEmailsWithDays(userID, accountID uint, days int) 
 		"fetched_count": len(msgInfos),
 	})
 
-	// Now fetch body for each message individually to handle errors gracefully
+	// Batch fetch body content for all messages at once (much faster than one by one)
 	var fetchedEmails []FetchedEmail
 	var parseErrors int
 
+	// Build a map for quick lookup
+	seqNumToInfo := make(map[uint32]msgInfo)
+	for _, info := range msgInfos {
+		seqNumToInfo[info.seqNum] = info
+	}
+
+	// Fetch all bodies in one request
+	allSeqSet := new(imap.SeqSet)
+	for _, info := range msgInfos {
+		allSeqSet.AddNum(info.seqNum)
+	}
+
+	section := &imap.BodySectionName{Peek: true}
+	bodyItems := []imap.FetchItem{section.FetchItem()}
+
+	bodyMessages := make(chan *imap.Message, 100)
+	bodyDone := make(chan error, 1)
+
+	go func() {
+		bodyDone <- c.Fetch(allSeqSet, bodyItems, bodyMessages)
+	}()
+
+	// Process body messages as they arrive
+	bodyMap := make(map[uint32][]byte)
+	for bodyMsg := range bodyMessages {
+		if bodyMsg == nil {
+			continue
+		}
+		for _, literal := range bodyMsg.Body {
+			content, err := io.ReadAll(literal)
+			if err != nil {
+				continue
+			}
+			bodyMap[bodyMsg.SeqNum] = content
+		}
+	}
+
+	if err := <-bodyDone; err != nil {
+		s.logService.LogWarn(userID, models.LogModuleEmail, "fetch", "Batch body fetch had errors", map[string]interface{}{
+			"error": err.Error(),
+		})
+	}
+
+	s.logService.LogInfo(userID, models.LogModuleEmail, "fetch", "Body fetch completed", map[string]interface{}{
+		"account_id":   accountID,
+		"bodies_count": len(bodyMap),
+	})
+
+	// Now build the final email list
 	for _, info := range msgInfos {
 		email := FetchedEmail{
 			UID:     info.uid,
@@ -342,7 +391,6 @@ func (s *EmailService) FetchNewEmailsWithDays(userID, accountID uint, days int) 
 		if info.envelope.MessageId != "" {
 			email.MessageID = info.envelope.MessageId
 		} else {
-			// Generate fallback message ID
 			email.MessageID = fmt.Sprintf("uid:%d", info.uid)
 		}
 
@@ -354,51 +402,26 @@ func (s *EmailService) FetchNewEmailsWithDays(userID, accountID uint, days int) 
 			email.To = append(email.To, formatAddress(addr))
 		}
 
-		// Try to fetch body content
-		bodySeqSet := new(imap.SeqSet)
-		bodySeqSet.AddNum(info.seqNum)
+		// Get body content from map
+		if content, ok := bodyMap[info.seqNum]; ok {
+			email.RawContent = content
 
-		section := &imap.BodySectionName{Peek: true}
-		bodyItems := []imap.FetchItem{section.FetchItem()}
-
-		bodyMessages := make(chan *imap.Message, 1)
-		bodyDone := make(chan error, 1)
-
-		go func() {
-			bodyDone <- c.Fetch(bodySeqSet, bodyItems, bodyMessages)
-		}()
-
-		for bodyMsg := range bodyMessages {
-			if bodyMsg == nil {
-				continue
-			}
-			for _, literal := range bodyMsg.Body {
-				content, err := io.ReadAll(literal)
-				if err != nil {
-					continue
+			// Parse body content
+			r := bytes.NewReader(content)
+			entity, err := message.Read(r)
+			if err != nil {
+				// Try parsing as plain mail
+				r.Seek(0, io.SeekStart)
+				m, err := mail.ReadMessage(r)
+				if err == nil {
+					body, _ := io.ReadAll(m.Body)
+					email.Body = string(body)
+				} else {
+					parseErrors++
 				}
-				email.RawContent = content
-
-				// Parse body content
-				r := bytes.NewReader(content)
-				entity, err := message.Read(r)
-				if err != nil {
-					// Try parsing as plain mail
-					r.Seek(0, io.SeekStart)
-					m, err := mail.ReadMessage(r)
-					if err == nil {
-						body, _ := io.ReadAll(m.Body)
-						email.Body = string(body)
-					}
-					continue
-				}
+			} else {
 				s.parseMessageEntity(entity, &email)
 			}
-		}
-
-		if err := <-bodyDone; err != nil {
-			// Log but don't fail - we still have envelope info
-			parseErrors++
 		}
 
 		fetchedEmails = append(fetchedEmails, email)
