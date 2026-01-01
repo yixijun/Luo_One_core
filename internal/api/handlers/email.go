@@ -510,6 +510,51 @@ func (h *EmailHandler) SyncEmails(c *gin.Context) {
 	})
 }
 
+// GetEmailCount returns the total email count for checking updates
+// GET /api/emails/count
+func (h *EmailHandler) GetEmailCount(c *gin.Context) {
+	userID, exists := middleware.GetUserIDFromContext(c)
+	if !exists {
+		c.JSON(http.StatusUnauthorized, gin.H{
+			"success": false,
+			"error": gin.H{
+				"code":    "AUTH_FAILED",
+				"message": "User not authenticated",
+			},
+		})
+		return
+	}
+
+	accountID, _ := strconv.ParseUint(c.Query("account_id"), 10, 32)
+	folder := c.DefaultQuery("folder", "inbox")
+
+	opts := services.EmailListOptions{
+		AccountID: uint(accountID),
+		Folder:    folder,
+		Page:      1,
+		Limit:     1, // 只需要获取 total
+	}
+
+	result, err := h.emailService.ListEmails(userID, opts)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"success": false,
+			"error": gin.H{
+				"code":    "INTERNAL_ERROR",
+				"message": "Failed to get email count",
+			},
+		})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"success": true,
+		"data": gin.H{
+			"total": result.Total,
+		},
+	})
+}
+
 
 // ListAttachments lists all attachments for an email
 // GET /api/emails/:id/attachments

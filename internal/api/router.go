@@ -97,6 +97,7 @@ func SetupRouter(db *gorm.DB, cfg *config.Config) (*gin.Engine, *middleware.Auth
 			emails := protected.Group("/emails")
 			{
 				emails.GET("", emailHandler.ListEmails)
+				emails.GET("/count", emailHandler.GetEmailCount) // 检查邮件数量
 				emails.GET("/:id", emailHandler.GetEmail)
 				emails.DELETE("/:id", emailHandler.DeleteEmail)
 				emails.PUT("/:id/read", emailHandler.MarkAsRead)
