@@ -14,6 +14,7 @@ import (
 	"net/mail"
 	"net/smtp"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/emersion/go-imap"
@@ -285,16 +286,7 @@ func (s *EmailService) FetchNewEmailsWithDays(userID, accountID uint, days int) 
 		return []FetchedEmail{}, nil
 	}
 
-	// Limit to most recent 1000 emails to avoid timeout
-	const maxEmails = 1000
-	if len(seqNums) > maxEmails {
-		s.logService.LogInfo(userID, models.LogModuleEmail, "fetch", "Limiting to most recent emails", map[string]interface{}{
-			"total":   len(seqNums),
-			"limited": maxEmails,
-		})
-		// Keep only the most recent (highest sequence numbers)
-		seqNums = seqNums[len(seqNums)-maxEmails:]
-	}
+	// No limit - fetch all emails using concurrent connections
 
 	// Build sequence set
 	seqSet := new(imap.SeqSet)
@@ -303,7 +295,7 @@ func (s *EmailService) FetchNewEmailsWithDays(userID, accountID uint, days int) 
 	// Fetch messages - only get envelope and basic info first, not full RFC822
 	// RFC822 can cause parsing errors with non-standard emails
 	items := []imap.FetchItem{imap.FetchUid, imap.FetchEnvelope, imap.FetchBodyStructure, imap.FetchFlags}
-	messages := make(chan *imap.Message, 10)
+	messages := make(chan *imap.Message, 100)
 	done := make(chan error, 1)
 
 	go func() {
@@ -339,66 +331,109 @@ func (s *EmailService) FetchNewEmailsWithDays(userID, accountID uint, days int) 
 		"fetched_count": len(msgInfos),
 	})
 
-	// Fetch body content in batches to avoid timeout/memory issues
-	const batchSize = 50
+	// Use multiple IMAP connections to fetch body content concurrently
+	const numWorkers = 5
+	const batchSize = 100
 	var fetchedEmails []FetchedEmail
 	var parseErrors int
 	bodyMap := make(map[uint32][]byte)
+	var bodyMapMu sync.Mutex
 
-	section := &imap.BodySectionName{Peek: true}
-	bodyItems := []imap.FetchItem{section.FetchItem()}
+	// Split msgInfos into chunks for workers
+	totalMsgs := len(msgInfos)
+	chunkSize := (totalMsgs + numWorkers - 1) / numWorkers
 
-	// Process in batches
-	totalBatches := (len(msgInfos) + batchSize - 1) / batchSize
-	for batchIdx := 0; batchIdx < totalBatches; batchIdx++ {
-		start := batchIdx * batchSize
-		end := start + batchSize
-		if end > len(msgInfos) {
-			end = len(msgInfos)
+	var wg sync.WaitGroup
+	errChan := make(chan error, numWorkers)
+
+	for workerIdx := 0; workerIdx < numWorkers; workerIdx++ {
+		start := workerIdx * chunkSize
+		if start >= totalMsgs {
+			break
 		}
-		batch := msgInfos[start:end]
-
-		// Build sequence set for this batch
-		batchSeqSet := new(imap.SeqSet)
-		for _, info := range batch {
-			batchSeqSet.AddNum(info.seqNum)
+		end := start + chunkSize
+		if end > totalMsgs {
+			end = totalMsgs
 		}
+		chunk := msgInfos[start:end]
 
-		bodyMessages := make(chan *imap.Message, batchSize)
-		bodyDone := make(chan error, 1)
+		wg.Add(1)
+		go func(workerID int, msgs []msgInfo) {
+			defer wg.Done()
 
-		go func() {
-			bodyDone <- c.Fetch(batchSeqSet, bodyItems, bodyMessages)
-		}()
-
-		// Process body messages as they arrive
-		for bodyMsg := range bodyMessages {
-			if bodyMsg == nil {
-				continue
+			// Create a new IMAP connection for this worker
+			workerClient, err := s.connectIMAP(account)
+			if err != nil {
+				errChan <- fmt.Errorf("worker %d: connect failed: %v", workerID, err)
+				return
 			}
-			for _, literal := range bodyMsg.Body {
-				content, err := io.ReadAll(literal)
-				if err != nil {
-					continue
+			defer workerClient.Logout()
+
+			// Select INBOX
+			_, err = workerClient.Select("INBOX", false)
+			if err != nil {
+				errChan <- fmt.Errorf("worker %d: select failed: %v", workerID, err)
+				return
+			}
+
+			section := &imap.BodySectionName{Peek: true}
+			bodyItems := []imap.FetchItem{section.FetchItem()}
+
+			// Process in smaller batches within this worker
+			for i := 0; i < len(msgs); i += batchSize {
+				batchEnd := i + batchSize
+				if batchEnd > len(msgs) {
+					batchEnd = len(msgs)
 				}
-				bodyMap[bodyMsg.SeqNum] = content
+				batch := msgs[i:batchEnd]
+
+				batchSeqSet := new(imap.SeqSet)
+				for _, info := range batch {
+					batchSeqSet.AddNum(info.seqNum)
+				}
+
+				bodyMessages := make(chan *imap.Message, batchSize)
+				bodyDone := make(chan error, 1)
+
+				go func() {
+					bodyDone <- workerClient.Fetch(batchSeqSet, bodyItems, bodyMessages)
+				}()
+
+				for bodyMsg := range bodyMessages {
+					if bodyMsg == nil {
+						continue
+					}
+					for _, literal := range bodyMsg.Body {
+						content, err := io.ReadAll(literal)
+						if err != nil {
+							continue
+						}
+						bodyMapMu.Lock()
+						bodyMap[bodyMsg.SeqNum] = content
+						bodyMapMu.Unlock()
+					}
+				}
+
+				<-bodyDone
 			}
-		}
+		}(workerIdx, chunk)
+	}
 
-		if err := <-bodyDone; err != nil {
-			s.logService.LogWarn(userID, models.LogModuleEmail, "fetch", "Batch body fetch had errors", map[string]interface{}{
-				"batch":  batchIdx + 1,
-				"total":  totalBatches,
-				"error":  err.Error(),
-			})
-		}
+	wg.Wait()
+	close(errChan)
 
-		s.logService.LogInfo(userID, models.LogModuleEmail, "fetch", "Batch completed", map[string]interface{}{
-			"batch":        batchIdx + 1,
-			"total":        totalBatches,
-			"bodies_count": len(bodyMap),
+	// Log any worker errors
+	for err := range errChan {
+		s.logService.LogWarn(userID, models.LogModuleEmail, "fetch", "Worker error", map[string]interface{}{
+			"error": err.Error(),
 		})
 	}
+
+	s.logService.LogInfo(userID, models.LogModuleEmail, "fetch", "Body fetch completed", map[string]interface{}{
+		"account_id":   accountID,
+		"bodies_count": len(bodyMap),
+		"workers":      numWorkers,
+	})
 
 	// Now build the final email list
 	for _, info := range msgInfos {
