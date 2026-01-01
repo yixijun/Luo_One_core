@@ -1068,7 +1068,7 @@ func (s *EmailService) GetFullSyncProgress(accountID uint) *FullSyncProgress {
 	return &FullSyncProgress{AccountID: accountID, Status: "idle"}
 }
 
-// SyncAllEmails 全量同步所有邮件，分批处理并更新进度
+// SyncAllEmails 全量同步所有邮件，使用并发快速同步
 func (s *EmailService) SyncAllEmails(userID, accountID uint) (int, error) {
 	account, err := s.accountService.GetAccountByIDAndUserID(accountID, userID)
 	if err != nil {
@@ -1084,7 +1084,7 @@ func (s *EmailService) SyncAllEmails(userID, accountID uint) (int, error) {
 	fullSyncProgressMap[accountID] = progress
 	fullSyncProgressMutex.Unlock()
 
-	s.logService.LogInfo(userID, models.LogModuleEmail, "full_sync", "Starting full sync (batch mode)", map[string]interface{}{
+	s.logService.LogInfo(userID, models.LogModuleEmail, "full_sync", "Starting full sync (fast mode)", map[string]interface{}{
 		"account_id": accountID,
 		"email":      account.Email,
 	})
@@ -1098,87 +1098,179 @@ func (s *EmailService) SyncAllEmails(userID, accountID uint) (int, error) {
 	}
 
 	mbox, err := c.Select("INBOX", true)
-	c.Logout()
 	if err != nil {
+		c.Logout()
 		progress.Status = "failed"
 		progress.Error = err.Error()
 		return 0, err
 	}
 
 	progress.TotalMessages = mbox.Messages
-	
-	// 计算批次
-	const batchSize = 200
-	totalBatches := int((mbox.Messages + batchSize - 1) / batchSize)
-	progress.TotalBatches = totalBatches
+	progress.TotalBatches = 3 // 分3个阶段：获取envelope、过滤、保存
 
 	s.logService.LogInfo(userID, models.LogModuleEmail, "full_sync", "Full sync plan", map[string]interface{}{
 		"total_messages": mbox.Messages,
-		"batch_size":     batchSize,
-		"total_batches":  totalBatches,
 	})
 
 	// 确保目录存在
 	if err := s.userManager.CreateAccountDirectories(userID, accountID); err != nil {
+		c.Logout()
 		progress.Status = "failed"
 		progress.Error = err.Error()
 		return 0, err
 	}
 
-	totalSaved := 0
-	totalSkipped := 0
+	// 阶段1：快速获取所有 envelope（只获取元数据，不获取 body）
+	progress.CurrentBatch = 1
+	s.logService.LogInfo(userID, models.LogModuleEmail, "full_sync", "Phase 1: Fetching envelopes", nil)
 
-	// 分批处理
-	for batch := 0; batch < totalBatches; batch++ {
-		progress.CurrentBatch = batch + 1
-		
-		startSeq := uint32(batch*batchSize + 1)
-		endSeq := uint32((batch + 1) * batchSize)
-		if endSeq > mbox.Messages {
-			endSeq = mbox.Messages
-		}
+	seqSet := new(imap.SeqSet)
+	seqSet.AddRange(1, mbox.Messages)
 
-		s.logService.LogInfo(userID, models.LogModuleEmail, "full_sync", "Processing batch", map[string]interface{}{
-			"batch":     batch + 1,
-			"start_seq": startSeq,
-			"end_seq":   endSeq,
-		})
+	// 只获取 envelope，速度很快
+	items := []imap.FetchItem{imap.FetchUid, imap.FetchEnvelope}
+	messages := make(chan *imap.Message, 500)
+	done := make(chan error, 1)
 
-		// 获取这一批邮件
-		saved, skipped, err := s.syncBatchEmails(userID, accountID, account, startSeq, endSeq)
-		if err != nil {
-			s.logService.LogError(userID, models.LogModuleEmail, "full_sync", "Batch failed", map[string]interface{}{
-				"batch": batch + 1,
-				"error": err.Error(),
-			})
-			// 继续下一批，不中断
-		}
+	go func() {
+		done <- c.Fetch(seqSet, items, messages)
+	}()
 
-		totalSaved += saved
-		totalSkipped += skipped
-		progress.Saved = totalSaved
-		progress.Skipped = totalSkipped
-		progress.Processed = endSeq
-
-		s.logService.LogInfo(userID, models.LogModuleEmail, "full_sync", "Batch completed", map[string]interface{}{
-			"batch":         batch + 1,
-			"saved":         saved,
-			"skipped":       skipped,
-			"total_saved":   totalSaved,
-			"total_skipped": totalSkipped,
-		})
+	type emailMeta struct {
+		UID       uint32
+		MessageID string
+		Subject   string
+		From      string
+		To        []string
+		Date      time.Time
 	}
+
+	var allMetas []emailMeta
+	var allMessageIDs []string
+	processed := uint32(0)
+
+	for msg := range messages {
+		if msg == nil || msg.Envelope == nil {
+			continue
+		}
+		processed++
+		progress.Processed = processed
+
+		messageID := msg.Envelope.MessageId
+		if messageID == "" {
+			messageID = fmt.Sprintf("uid:%d", msg.Uid)
+		}
+
+		meta := emailMeta{
+			UID:       msg.Uid,
+			MessageID: messageID,
+			Subject:   msg.Envelope.Subject,
+			Date:      msg.Envelope.Date,
+		}
+
+		if len(msg.Envelope.From) > 0 {
+			meta.From = formatAddress(msg.Envelope.From[0])
+		}
+		for _, addr := range msg.Envelope.To {
+			meta.To = append(meta.To, formatAddress(addr))
+		}
+
+		allMetas = append(allMetas, meta)
+		allMessageIDs = append(allMessageIDs, messageID)
+	}
+
+	<-done
+	c.Logout()
+
+	s.logService.LogInfo(userID, models.LogModuleEmail, "full_sync", "Phase 1 completed", map[string]interface{}{
+		"total_envelopes": len(allMetas),
+	})
+
+	// 阶段2：批量查询已存在的邮件
+	progress.CurrentBatch = 2
+	s.logService.LogInfo(userID, models.LogModuleEmail, "full_sync", "Phase 2: Filtering existing", nil)
+
+	existingIDs := make(map[string]bool)
+	const dbBatchSize = 500
+	for i := 0; i < len(allMessageIDs); i += dbBatchSize {
+		end := i + dbBatchSize
+		if end > len(allMessageIDs) {
+			end = len(allMessageIDs)
+		}
+		batch := allMessageIDs[i:end]
+
+		var existingEmails []models.Email
+		s.db.Select("message_id").Where("account_id = ? AND message_id IN ?", accountID, batch).Find(&existingEmails)
+		for _, e := range existingEmails {
+			existingIDs[e.MessageID] = true
+		}
+	}
+
+	// 过滤出新邮件
+	var newMetas []emailMeta
+	for _, meta := range allMetas {
+		if !existingIDs[meta.MessageID] {
+			newMetas = append(newMetas, meta)
+		}
+	}
+
+	progress.Skipped = len(allMetas) - len(newMetas)
+	s.logService.LogInfo(userID, models.LogModuleEmail, "full_sync", "Phase 2 completed", map[string]interface{}{
+		"new_emails": len(newMetas),
+		"skipped":    progress.Skipped,
+	})
+
+	if len(newMetas) == 0 {
+		progress.Status = "completed"
+		s.db.Model(&models.EmailAccount{}).Where("id = ?", accountID).Update("last_sync_at", time.Now())
+		return 0, nil
+	}
+
+	// 阶段3：批量保存新邮件（只保存元数据，不获取 body）
+	progress.CurrentBatch = 3
+	s.logService.LogInfo(userID, models.LogModuleEmail, "full_sync", "Phase 3: Saving emails", map[string]interface{}{
+		"count": len(newMetas),
+	})
+
+	var emailsToSave []*models.Email
+	for _, meta := range newMetas {
+		toAddrsJSON, _ := json.Marshal(meta.To)
+		emailRecord := &models.Email{
+			AccountID:      accountID,
+			MessageID:      meta.MessageID,
+			Subject:        meta.Subject,
+			FromAddr:       meta.From,
+			ToAddrs:        string(toAddrsJSON),
+			Date:           meta.Date,
+			Body:           "", // 暂不获取 body，后续按需加载
+			HTMLBody:       "",
+			HasAttachments: false,
+			IsRead:         false,
+			Folder:         models.FolderInbox,
+			RawFilePath:    "",
+		}
+		emailsToSave = append(emailsToSave, emailRecord)
+	}
+
+	// 批量插入
+	if err := s.db.CreateInBatches(emailsToSave, 100).Error; err != nil {
+		progress.Status = "failed"
+		progress.Error = err.Error()
+		return 0, err
+	}
+
+	progress.Saved = len(emailsToSave)
+	progress.Status = "completed"
 
 	// 更新最后同步时间
 	s.db.Model(&models.EmailAccount{}).Where("id = ?", accountID).Update("last_sync_at", time.Now())
 
-	progress.Status = "completed"
 	s.logService.LogInfo(userID, models.LogModuleEmail, "full_sync", "Full sync completed", map[string]interface{}{
-		"total_saved":   totalSaved,
-		"total_skipped": totalSkipped,
+		"total_saved":   progress.Saved,
+		"total_skipped": progress.Skipped,
 	})
 
-	return totalSaved, nil
+	return progress.Saved, nil
 }
 
 // syncBatchEmails 同步一批邮件（批量处理）
