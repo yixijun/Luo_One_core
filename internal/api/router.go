@@ -1,6 +1,8 @@
 package api
 
 import (
+	"time"
+
 	"github.com/gin-gonic/gin"
 	"github.com/luo-one/core/internal/api/handlers"
 	"github.com/luo-one/core/internal/api/middleware"
@@ -31,6 +33,10 @@ func SetupRouter(db *gorm.DB, cfg *config.Config) (*gin.Engine, *middleware.Auth
 	encryptionKey := []byte(cfg.JWTSecret)
 	accountService := services.NewAccountService(db, encryptionKey)
 	emailService := services.NewEmailService(db, accountService, userManager)
+
+	// Start sync scheduler (auto sync every 5 minutes)
+	syncScheduler := services.NewSyncScheduler(db, emailService, logService, 5*time.Minute)
+	syncScheduler.Start()
 
 	// Initialize handlers
 	authHandler := handlers.NewAuthHandler(userService, authManager.JWTManager, logService)
