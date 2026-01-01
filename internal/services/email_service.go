@@ -11,8 +11,10 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"net/http"
 	"net/mail"
 	"net/smtp"
+	"os"
 	"strconv"
 	"strings"
 	"sync"
@@ -126,11 +128,6 @@ type FetchedAttachment struct {
 
 // connectIMAP establishes an IMAP connection to the email server
 func (s *EmailService) connectIMAP(account *models.EmailAccount) (*client.Client, error) {
-	password, err := s.accountService.GetDecryptedPassword(account)
-	if err != nil {
-		return nil, fmt.Errorf("%w: %v", ErrIMAPConnectionFailed, err)
-	}
-
 	addr := fmt.Sprintf("%s:%d", account.IMAPHost, account.IMAPPort)
 	var c *client.Client
 
@@ -167,7 +164,7 @@ func (s *EmailService) connectIMAP(account *models.EmailAccount) (*client.Client
 	// This must be done before login for some email providers
 	if ok, _ := c.Support("ID"); ok {
 		idClient := id.NewClient(c)
-		_, err = idClient.ID(id.ID{
+		_, err := idClient.ID(id.ID{
 			id.FieldName:    "Luo One",
 			id.FieldVersion: "1.0.0",
 			id.FieldVendor:  "Luo One",
@@ -177,12 +174,135 @@ func (s *EmailService) connectIMAP(account *models.EmailAccount) (*client.Client
 		}
 	}
 
-	if err := c.Login(account.Username, password); err != nil {
-		c.Logout()
-		return nil, fmt.Errorf("%w: login failed: %v", ErrIMAPConnectionFailed, err)
+	// Authenticate based on auth type
+	if account.AuthType == models.AuthTypeOAuth2 {
+		// Use XOAUTH2 authentication
+		accessToken, _, err := s.accountService.GetDecryptedOAuthTokens(account)
+		if err != nil {
+			c.Logout()
+			return nil, fmt.Errorf("%w: failed to get OAuth tokens: %v", ErrIMAPConnectionFailed, err)
+		}
+
+		// Check if token needs refresh
+		if account.OAuthTokenExpiry.Before(time.Now()) {
+			accessToken, err = s.refreshOAuthToken(account)
+			if err != nil {
+				c.Logout()
+				return nil, fmt.Errorf("%w: failed to refresh OAuth token: %v", ErrIMAPConnectionFailed, err)
+			}
+		}
+
+		// XOAUTH2 authentication
+		saslClient := NewXOAuth2Client(account.Username, accessToken)
+		if err := c.Authenticate(saslClient); err != nil {
+			c.Logout()
+			return nil, fmt.Errorf("%w: XOAUTH2 authentication failed: %v", ErrIMAPConnectionFailed, err)
+		}
+	} else {
+		// Traditional password authentication
+		password, err := s.accountService.GetDecryptedPassword(account)
+		if err != nil {
+			c.Logout()
+			return nil, fmt.Errorf("%w: %v", ErrIMAPConnectionFailed, err)
+		}
+
+		if err := c.Login(account.Username, password); err != nil {
+			c.Logout()
+			return nil, fmt.Errorf("%w: login failed: %v", ErrIMAPConnectionFailed, err)
+		}
 	}
 
 	return c, nil
+}
+
+// XOAuth2Client implements the SASL XOAUTH2 mechanism
+type XOAuth2Client struct {
+	Username    string
+	AccessToken string
+}
+
+// NewXOAuth2Client creates a new XOAUTH2 SASL client
+func NewXOAuth2Client(username, accessToken string) *XOAuth2Client {
+	return &XOAuth2Client{
+		Username:    username,
+		AccessToken: accessToken,
+	}
+}
+
+// Start begins the XOAUTH2 authentication
+func (c *XOAuth2Client) Start() (mech string, ir []byte, err error) {
+	// XOAUTH2 initial response format: "user=" + user + "\x01auth=Bearer " + token + "\x01\x01"
+	ir = []byte(fmt.Sprintf("user=%s\x01auth=Bearer %s\x01\x01", c.Username, c.AccessToken))
+	return "XOAUTH2", ir, nil
+}
+
+// Next handles server challenges (XOAUTH2 doesn't have additional challenges)
+func (c *XOAuth2Client) Next(challenge []byte) (response []byte, err error) {
+	// XOAUTH2 doesn't have additional challenges, return empty response
+	return nil, nil
+}
+
+// refreshOAuthToken refreshes the OAuth access token using the refresh token
+func (s *EmailService) refreshOAuthToken(account *models.EmailAccount) (string, error) {
+	_, refreshToken, err := s.accountService.GetDecryptedOAuthTokens(account)
+	if err != nil {
+		return "", err
+	}
+
+	if refreshToken == "" {
+		return "", fmt.Errorf("no refresh token available")
+	}
+
+	// For Google OAuth
+	if account.OAuthProvider == "google" {
+		return s.refreshGoogleToken(account, refreshToken)
+	}
+
+	return "", fmt.Errorf("unsupported OAuth provider: %s", account.OAuthProvider)
+}
+
+// refreshGoogleToken refreshes a Google OAuth token
+func (s *EmailService) refreshGoogleToken(account *models.EmailAccount, refreshToken string) (string, error) {
+	// This requires the Google client credentials
+	// In production, these should be stored securely
+	clientID := os.Getenv("GOOGLE_CLIENT_ID")
+	clientSecret := os.Getenv("GOOGLE_CLIENT_SECRET")
+
+	if clientID == "" || clientSecret == "" {
+		return "", fmt.Errorf("Google OAuth credentials not configured")
+	}
+
+	// Make token refresh request
+	resp, err := http.PostForm("https://oauth2.googleapis.com/token", map[string][]string{
+		"client_id":     {clientID},
+		"client_secret": {clientSecret},
+		"refresh_token": {refreshToken},
+		"grant_type":    {"refresh_token"},
+	})
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("token refresh failed with status %d", resp.StatusCode)
+	}
+
+	var tokenResp struct {
+		AccessToken string `json:"access_token"`
+		ExpiresIn   int    `json:"expires_in"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&tokenResp); err != nil {
+		return "", err
+	}
+
+	// Update the token in database
+	expiry := time.Now().Add(time.Duration(tokenResp.ExpiresIn) * time.Second)
+	if err := s.accountService.UpdateOAuthTokens(account.ID, tokenResp.AccessToken, "", expiry); err != nil {
+		return "", err
+	}
+
+	return tokenResp.AccessToken, nil
 }
 
 // FetchNewEmails fetches new emails from an account since the last sync

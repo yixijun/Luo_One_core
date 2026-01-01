@@ -453,3 +453,95 @@ func (s *AccountService) GetEnabledAccountsByUserID(userID uint) ([]models.Email
 	}
 	return accounts, nil
 }
+
+// CreateAccountWithOAuth creates a new email account with OAuth tokens
+func (s *AccountService) CreateAccountWithOAuth(account *models.EmailAccount, accessToken, refreshToken string) error {
+	// Check if account already exists for this user
+	var existingAccount models.EmailAccount
+	if err := s.db.Where("user_id = ? AND email = ?", account.UserID, account.Email).First(&existingAccount).Error; err == nil {
+		// Update existing account with new OAuth tokens
+		encryptedAccess, err := s.encryptPassword(accessToken)
+		if err != nil {
+			return err
+		}
+		encryptedRefresh, err := s.encryptPassword(refreshToken)
+		if err != nil {
+			return err
+		}
+
+		existingAccount.AuthType = models.AuthTypeOAuth2
+		existingAccount.OAuthProvider = account.OAuthProvider
+		existingAccount.OAuthAccessToken = encryptedAccess
+		existingAccount.OAuthRefreshToken = encryptedRefresh
+		existingAccount.OAuthTokenExpiry = account.OAuthTokenExpiry
+		existingAccount.Enabled = true
+
+		return s.db.Save(&existingAccount).Error
+	}
+
+	// Encrypt tokens
+	encryptedAccess, err := s.encryptPassword(accessToken)
+	if err != nil {
+		return err
+	}
+	encryptedRefresh, err := s.encryptPassword(refreshToken)
+	if err != nil {
+		return err
+	}
+
+	account.OAuthAccessToken = encryptedAccess
+	account.OAuthRefreshToken = encryptedRefresh
+
+	if err := s.db.Create(account).Error; err != nil {
+		return err
+	}
+
+	// Log the account creation
+	s.logService.LogAccountCreated(account.UserID, account.ID, account.Email)
+
+	return nil
+}
+
+// GetDecryptedOAuthTokens returns the decrypted OAuth tokens for an account
+func (s *AccountService) GetDecryptedOAuthTokens(account *models.EmailAccount) (accessToken, refreshToken string, err error) {
+	if account.OAuthAccessToken != "" {
+		accessToken, err = s.decryptPassword(account.OAuthAccessToken)
+		if err != nil {
+			return "", "", err
+		}
+	}
+	if account.OAuthRefreshToken != "" {
+		refreshToken, err = s.decryptPassword(account.OAuthRefreshToken)
+		if err != nil {
+			return "", "", err
+		}
+	}
+	return accessToken, refreshToken, nil
+}
+
+// UpdateOAuthTokens updates the OAuth tokens for an account
+func (s *AccountService) UpdateOAuthTokens(accountID uint, accessToken, refreshToken string, expiry interface{}) error {
+	updates := make(map[string]interface{})
+
+	if accessToken != "" {
+		encryptedAccess, err := s.encryptPassword(accessToken)
+		if err != nil {
+			return err
+		}
+		updates["oauth_access_token"] = encryptedAccess
+	}
+
+	if refreshToken != "" {
+		encryptedRefresh, err := s.encryptPassword(refreshToken)
+		if err != nil {
+			return err
+		}
+		updates["oauth_refresh_token"] = encryptedRefresh
+	}
+
+	if expiry != nil {
+		updates["oauth_token_expiry"] = expiry
+	}
+
+	return s.db.Model(&models.EmailAccount{}).Where("id = ?", accountID).Updates(updates).Error
+}

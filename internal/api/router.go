@@ -55,6 +55,7 @@ func SetupRouter(db *gorm.DB, cfg *config.Config) (*gin.Engine, *middleware.Auth
 	accountHandler := handlers.NewAccountHandler(accountService, logService)
 	emailHandler := handlers.NewEmailHandler(emailService, logService)
 	settingsHandler := handlers.NewSettingsHandler(userService, logService)
+	oauthHandler := handlers.NewOAuthHandler(accountService)
 
 	// Health check endpoint (no auth required)
 	router.GET("/health", func(c *gin.Context) {
@@ -71,6 +72,13 @@ func SetupRouter(db *gorm.DB, cfg *config.Config) (*gin.Engine, *middleware.Auth
 		auth := api.Group("/auth")
 		{
 			auth.POST("/login", authHandler.Login)
+		}
+
+		// OAuth routes (some require JWT, callback doesn't)
+		oauth := api.Group("/oauth")
+		{
+			oauth.GET("/config", oauthHandler.GetOAuthConfig) // Check if OAuth is configured
+			oauth.GET("/google/callback", oauthHandler.GoogleCallback) // OAuth callback (no JWT needed)
 		}
 
 		// Protected routes (API key + JWT required)
@@ -127,6 +135,12 @@ func SetupRouter(db *gorm.DB, cfg *config.Config) (*gin.Engine, *middleware.Auth
 			{
 				settings.GET("", settingsHandler.GetSettings)
 				settings.PUT("", settingsHandler.UpdateSettings)
+			}
+
+			// OAuth routes (protected - need JWT to initiate)
+			oauthProtected := protected.Group("/oauth")
+			{
+				oauthProtected.GET("/google/auth", oauthHandler.GetGoogleAuthURL)
 			}
 		}
 	}
