@@ -77,11 +77,7 @@ func SetupRouter(db *gorm.DB, cfg *config.Config) (*gin.Engine, *middleware.Auth
 			auth.POST("/login", authHandler.Login)
 		}
 
-		// OAuth routes (API key required)
-		oauth := api.Group("/oauth")
-		{
-			// Note: callback is registered above, outside the API key middleware
-		}
+		// Note: OAuth callback is registered above, outside the API key middleware
 
 		// Protected routes (API key + JWT required)
 		protected := api.Group("")
