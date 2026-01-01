@@ -1032,6 +1032,60 @@ func (s *EmailService) SyncAndSaveEmailsWithDays(userID, accountID uint, days in
 	return savedCount, nil
 }
 
+// SyncAllEmails 全量同步所有邮件，分批处理避免超时
+// 每批处理 500 封邮件，直到没有新邮件为止
+func (s *EmailService) SyncAllEmails(userID, accountID uint) (int, error) {
+	account, err := s.accountService.GetAccountByIDAndUserID(accountID, userID)
+	if err != nil {
+		return 0, err
+	}
+
+	s.logService.LogInfo(userID, models.LogModuleEmail, "full_sync", "Starting full sync", map[string]interface{}{
+		"account_id": accountID,
+		"email":      account.Email,
+	})
+
+	totalSaved := 0
+	batchNum := 0
+	maxBatches := 100 // 最多 100 批，防止无限循环
+
+	for batchNum < maxBatches {
+		batchNum++
+		s.logService.LogInfo(userID, models.LogModuleEmail, "full_sync", "Processing batch", map[string]interface{}{
+			"batch":       batchNum,
+			"total_saved": totalSaved,
+		})
+
+		// 使用 days=-1 获取所有邮件，但 FetchNewEmailsWithDays 内部会限制每次 500 封
+		// 并且会跳过已存在的邮件
+		savedCount, err := s.SyncAndSaveEmailsWithDays(userID, accountID, -1)
+		if err != nil {
+			s.logService.LogError(userID, models.LogModuleEmail, "full_sync", "Batch sync failed", map[string]interface{}{
+				"batch": batchNum,
+				"error": err.Error(),
+			})
+			// 如果已经同步了一些邮件，返回已同步的数量而不是错误
+			if totalSaved > 0 {
+				return totalSaved, nil
+			}
+			return 0, err
+		}
+
+		totalSaved += savedCount
+
+		// 如果这一批没有新邮件，说明已经同步完成
+		if savedCount == 0 {
+			s.logService.LogInfo(userID, models.LogModuleEmail, "full_sync", "Full sync completed", map[string]interface{}{
+				"total_batches": batchNum,
+				"total_saved":   totalSaved,
+			})
+			break
+		}
+	}
+
+	return totalSaved, nil
+}
+
 // GetEmailByID retrieves an email by ID
 func (s *EmailService) GetEmailByID(id uint) (*models.Email, error) {
 	var email models.Email

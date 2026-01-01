@@ -41,6 +41,7 @@ type SendEmailRequest struct {
 // SyncRequest represents the request to sync emails
 type SyncRequest struct {
 	AccountID uint `json:"account_id" binding:"required"`
+	FullSync  bool `json:"full_sync"` // 是否全量同步（分批处理所有邮件）
 }
 
 // EmailResponse represents the response for an email
@@ -523,7 +524,17 @@ func (h *EmailHandler) SyncEmails(c *gin.Context) {
 		return
 	}
 
-	savedCount, err := h.emailService.SyncAndSaveEmails(userID, req.AccountID)
+	var savedCount int
+	var err error
+
+	if req.FullSync {
+		// 全量同步：分批处理所有邮件
+		savedCount, err = h.emailService.SyncAllEmails(userID, req.AccountID)
+	} else {
+		// 普通同步：使用账户配置的 sync_days
+		savedCount, err = h.emailService.SyncAndSaveEmails(userID, req.AccountID)
+	}
+
 	if err != nil {
 		if err == services.ErrAccountNotFound {
 			c.JSON(http.StatusNotFound, gin.H{
