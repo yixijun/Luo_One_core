@@ -2,6 +2,7 @@ package services
 
 import (
 	"crypto/tls"
+	"encoding/base64"
 	"fmt"
 	"net"
 	"net/smtp"
@@ -16,6 +17,54 @@ const (
 // buildAddress builds a host:port address string
 func buildAddress(host string, port int) string {
 	return fmt.Sprintf("%s:%d", host, port)
+}
+
+// connLoginAuth implements smtp.Auth for LOGIN authentication (for connection testing)
+type connLoginAuth struct {
+	username, password string
+}
+
+func newConnLoginAuth(username, password string) smtp.Auth {
+	return &connLoginAuth{username, password}
+}
+
+func (a *connLoginAuth) Start(server *smtp.ServerInfo) (string, []byte, error) {
+	return "LOGIN", []byte{}, nil
+}
+
+func (a *connLoginAuth) Next(fromServer []byte, more bool) ([]byte, error) {
+	if more {
+		switch string(fromServer) {
+		case "Username:", "username:":
+			return []byte(a.username), nil
+		case "Password:", "password:":
+			return []byte(a.password), nil
+		default:
+			decoded, err := base64.StdEncoding.DecodeString(string(fromServer))
+			if err == nil {
+				switch strings.ToLower(string(decoded)) {
+				case "username:", "username":
+					return []byte(a.username), nil
+				case "password:", "password":
+					return []byte(a.password), nil
+				}
+			}
+			return nil, fmt.Errorf("unexpected server challenge: %s", fromServer)
+		}
+	}
+	return nil, nil
+}
+
+// isChineseMailProvider checks if the host is a Chinese email provider
+func isChineseMailProvider(host string) bool {
+	return strings.Contains(host, "qq.com") ||
+		strings.Contains(host, "163.com") ||
+		strings.Contains(host, "126.com") ||
+		strings.Contains(host, "yeah.net") ||
+		strings.Contains(host, "sina.com") ||
+		strings.Contains(host, "sohu.com") ||
+		strings.Contains(host, "aliyun.com") ||
+		strings.Contains(host, "188.com")
 }
 
 // testIMAPConnectionInternal tests an IMAP connection
@@ -119,10 +168,14 @@ func testSMTPConnectionInternal(addr, username, password string, useSSL bool) Co
 	var client *smtp.Client
 	var err error
 
+	host, _, _ := net.SplitHostPort(addr)
+	useLoginAuth := isChineseMailProvider(host)
+
 	if useSSL {
 		// Connect with TLS (SMTPS)
 		tlsConfig := &tls.Config{
 			InsecureSkipVerify: false,
+			ServerName:         host,
 		}
 		conn, err := tls.DialWithDialer(&net.Dialer{Timeout: connectionTimeout}, "tcp", addr, tlsConfig)
 		if err != nil {
@@ -133,8 +186,6 @@ func testSMTPConnectionInternal(addr, username, password string, useSSL bool) Co
 		}
 		defer conn.Close()
 
-		// Extract host from address
-		host, _, _ := net.SplitHostPort(addr)
 		client, err = smtp.NewClient(conn, host)
 		if err != nil {
 			return ConnectionTestResult{
@@ -156,6 +207,7 @@ func testSMTPConnectionInternal(addr, username, password string, useSSL bool) Co
 		if ok, _ := client.Extension("STARTTLS"); ok {
 			tlsConfig := &tls.Config{
 				InsecureSkipVerify: false,
+				ServerName:         host,
 			}
 			if err := client.StartTLS(tlsConfig); err != nil {
 				// STARTTLS failed, but we can continue without it
@@ -164,13 +216,26 @@ func testSMTPConnectionInternal(addr, username, password string, useSSL bool) Co
 	}
 	defer client.Close()
 
-	// Try to authenticate
-	host, _, _ := net.SplitHostPort(addr)
-	auth := smtp.PlainAuth("", username, password, host)
+	// Try to authenticate with appropriate method
+	var auth smtp.Auth
+	if useLoginAuth {
+		auth = newConnLoginAuth(username, password)
+	} else {
+		auth = smtp.PlainAuth("", username, password, host)
+	}
+
 	if err := client.Auth(auth); err != nil {
-		return ConnectionTestResult{
-			Success: false,
-			Message: fmt.Sprintf("SMTP authentication failed: %v", err),
+		// Try fallback auth method
+		if useLoginAuth {
+			auth = smtp.PlainAuth("", username, password, host)
+		} else {
+			auth = newConnLoginAuth(username, password)
+		}
+		if err2 := client.Auth(auth); err2 != nil {
+			return ConnectionTestResult{
+				Success: false,
+				Message: fmt.Sprintf("SMTP authentication failed: %v", err),
+			}
 		}
 	}
 
