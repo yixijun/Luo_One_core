@@ -1099,11 +1099,12 @@ func (s *EmailService) ListEmails(userID uint, opts EmailListOptions) (*EmailLis
 	if opts.Page < 1 {
 		opts.Page = 1
 	}
-	if opts.Limit < 1 {
+	// limit=-1 表示不限制，limit=0 或未设置时使用默认值 20
+	if opts.Limit == 0 {
 		opts.Limit = 20
 	}
-	// limit=0 或 limit=-1 表示不限制，否则最大1000
-	if opts.Limit > 1000 && opts.Limit != -1 {
+	// 正数时最大1000
+	if opts.Limit > 1000 {
 		opts.Limit = 1000
 	}
 	if opts.SortBy == "" {
