@@ -286,15 +286,15 @@ func (s *EmailService) FetchNewEmailsWithDays(userID, accountID uint, days int) 
 		return []FetchedEmail{}, nil
 	}
 
-	// Use multiple IMAP connections to fetch everything concurrently
+	// Use multiple IMAP connections to fetch envelope only (fast)
+	// Body will be fetched on-demand when user views the email
 	const numWorkers = 10
-	const batchSize = 100
+	const batchSize = 200
 
 	type msgInfo struct {
 		seqNum   uint32
 		uid      uint32
 		envelope *imap.Envelope
-		body     []byte
 	}
 
 	// Split seqNums into chunks for workers
@@ -350,7 +350,7 @@ func (s *EmailService) FetchNewEmailsWithDays(userID, accountID uint, days int) 
 				return
 			}
 
-			// Process in batches
+			// Process in batches - only fetch envelope (metadata), not body
 			for i := 0; i < len(seqs); i += batchSize {
 				batchEnd := i + batchSize
 				if batchEnd > len(seqs) {
@@ -361,9 +361,8 @@ func (s *EmailService) FetchNewEmailsWithDays(userID, accountID uint, days int) 
 				batchSeqSet := new(imap.SeqSet)
 				batchSeqSet.AddNum(batch...)
 
-				// Fetch envelope + body in one request
-				section := &imap.BodySectionName{Peek: true}
-				items := []imap.FetchItem{imap.FetchUid, imap.FetchEnvelope, section.FetchItem()}
+				// Only fetch envelope - much faster than fetching body
+				items := []imap.FetchItem{imap.FetchUid, imap.FetchEnvelope}
 
 				messages := make(chan *imap.Message, batchSize)
 				done := make(chan error, 1)
@@ -376,19 +375,11 @@ func (s *EmailService) FetchNewEmailsWithDays(userID, accountID uint, days int) 
 					if msg == nil || msg.Envelope == nil {
 						continue
 					}
-					info := msgInfo{
+					results = append(results, msgInfo{
 						seqNum:   msg.SeqNum,
 						uid:      msg.Uid,
 						envelope: msg.Envelope,
-					}
-					// Get body
-					for _, literal := range msg.Body {
-						content, err := io.ReadAll(literal)
-						if err == nil {
-							info.body = content
-						}
-					}
-					results = append(results, info)
+					})
 				}
 				<-done
 			}
@@ -413,9 +404,8 @@ func (s *EmailService) FetchNewEmailsWithDays(userID, accountID uint, days int) 
 		"fetched_count": len(allMsgInfos),
 	})
 
-	// Build final email list
+	// Build final email list - only envelope data, no body
 	var fetchedEmails []FetchedEmail
-	var parseErrors int
 
 	for _, info := range allMsgInfos {
 		email := FetchedEmail{
@@ -438,33 +428,13 @@ func (s *EmailService) FetchNewEmailsWithDays(userID, accountID uint, days int) 
 			email.To = append(email.To, formatAddress(addr))
 		}
 
-		// Parse body content
-		if len(info.body) > 0 {
-			email.RawContent = info.body
-
-			r := bytes.NewReader(info.body)
-			entity, err := message.Read(r)
-			if err != nil {
-				r.Seek(0, io.SeekStart)
-				m, err := mail.ReadMessage(r)
-				if err == nil {
-					body, _ := io.ReadAll(m.Body)
-					email.Body = string(body)
-				} else {
-					parseErrors++
-				}
-			} else {
-				s.parseMessageEntity(entity, &email)
-			}
-		}
-
+		// Body will be fetched on-demand when user views the email
 		fetchedEmails = append(fetchedEmails, email)
 	}
 
 	s.logService.LogInfo(userID, models.LogModuleEmail, "fetch", "Fetch completed", map[string]interface{}{
 		"account_id":    accountID,
 		"fetched_count": len(fetchedEmails),
-		"parse_errors":  parseErrors,
 	})
 
 	return fetchedEmails, nil
