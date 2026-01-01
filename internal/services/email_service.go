@@ -208,27 +208,34 @@ func (s *EmailService) FetchNewEmailsWithDays(userID, accountID uint, days int) 
 		return []FetchedEmail{}, nil
 	}
 
-	// Use Search (not UidSearch) for better QQ Mail compatibility
+	// Determine search criteria based on days parameter
+	// days == -1: fetch all emails (no criteria)
+	// days == 0: incremental sync (use SINCE if has last sync)
+	// days > 0: fetch emails from last N days
 	criteria := imap.NewSearchCriteria()
+	useSince := false
 	
 	if days == -1 {
 		// Fetch all emails - no criteria needed
-		s.logService.LogInfo(userID, models.LogModuleEmail, "fetch", "Fetching all emails", map[string]interface{}{
+		s.logService.LogInfo(userID, models.LogModuleEmail, "fetch", "Fetching all emails (days=-1)", map[string]interface{}{
 			"total": mbox.Messages,
 		})
 	} else if days == 0 {
-		// Incremental sync
+		// Incremental sync - check if we have existing emails
 		var existingCount int64
 		_ = s.db.Model(&models.Email{}).Where("account_id = ?", accountID).Count(&existingCount).Error
 
 		if existingCount > 0 && !account.LastSyncAt.IsZero() {
 			// Use SINCE for incremental sync
-			sinceDate := account.LastSyncAt.AddDate(0, 0, -1) // Go back 1 day to avoid timezone issues
+			sinceDate := account.LastSyncAt.AddDate(0, 0, -1)
 			criteria.Since = time.Date(sinceDate.Year(), sinceDate.Month(), sinceDate.Day(), 0, 0, 0, 0, time.UTC)
-			s.logService.LogInfo(userID, models.LogModuleEmail, "fetch", "Incremental sync", map[string]interface{}{
-				"since": criteria.Since,
+			useSince = true
+			s.logService.LogInfo(userID, models.LogModuleEmail, "fetch", "Incremental sync with SINCE", map[string]interface{}{
+				"since":          criteria.Since,
+				"existing_count": existingCount,
 			})
 		} else {
+			// First sync - fetch all
 			s.logService.LogInfo(userID, models.LogModuleEmail, "fetch", "First sync, fetching all emails", map[string]interface{}{
 				"total": mbox.Messages,
 			})
@@ -237,19 +244,20 @@ func (s *EmailService) FetchNewEmailsWithDays(userID, accountID uint, days int) 
 		// Fetch emails from last N days
 		sinceDate := time.Now().AddDate(0, 0, -days)
 		criteria.Since = time.Date(sinceDate.Year(), sinceDate.Month(), sinceDate.Day(), 0, 0, 0, 0, time.UTC)
+		useSince = true
 		s.logService.LogInfo(userID, models.LogModuleEmail, "fetch", "Fetching emails by days", map[string]interface{}{
 			"days":  days,
 			"since": criteria.Since,
 		})
 	}
 
-	// Use Search (sequence numbers) instead of UidSearch for QQ Mail compatibility
+	// Use Search to get sequence numbers
 	seqNums, err := c.Search(criteria)
 	if err != nil {
-		s.logService.LogWarn(userID, models.LogModuleEmail, "fetch", "Search failed, using all messages", map[string]interface{}{
+		s.logService.LogWarn(userID, models.LogModuleEmail, "fetch", "Search failed", map[string]interface{}{
 			"error": err.Error(),
 		})
-		// Fallback: fetch all messages by sequence range
+		// Fallback: use sequence range 1:*
 		seqNums = make([]uint32, mbox.Messages)
 		for i := uint32(1); i <= mbox.Messages; i++ {
 			seqNums[i-1] = i
@@ -259,7 +267,19 @@ func (s *EmailService) FetchNewEmailsWithDays(userID, accountID uint, days int) 
 	s.logService.LogInfo(userID, models.LogModuleEmail, "fetch", "Search completed", map[string]interface{}{
 		"account_id": accountID,
 		"found_msgs": len(seqNums),
+		"use_since":  useSince,
 	})
+
+	// If SINCE search returned 0 results but we expected some, fallback to all
+	if len(seqNums) == 0 && useSince && mbox.Messages > 0 {
+		s.logService.LogWarn(userID, models.LogModuleEmail, "fetch", "SINCE search returned 0, falling back to all messages", map[string]interface{}{
+			"total_messages": mbox.Messages,
+		})
+		seqNums = make([]uint32, mbox.Messages)
+		for i := uint32(1); i <= mbox.Messages; i++ {
+			seqNums[i-1] = i
+		}
+	}
 
 	if len(seqNums) == 0 {
 		return []FetchedEmail{}, nil
@@ -269,7 +289,7 @@ func (s *EmailService) FetchNewEmailsWithDays(userID, accountID uint, days int) 
 	seqSet := new(imap.SeqSet)
 	seqSet.AddNum(seqNums...)
 
-	// Fetch messages using Fetch (not UidFetch) for QQ Mail compatibility
+	// Fetch messages
 	items := []imap.FetchItem{imap.FetchUid, imap.FetchEnvelope, imap.FetchRFC822, imap.FetchBodyStructure, imap.FetchFlags}
 	messages := make(chan *imap.Message, 10)
 	done := make(chan error, 1)
@@ -288,7 +308,7 @@ func (s *EmailService) FetchNewEmailsWithDays(userID, accountID uint, days int) 
 		email, err := s.parseIMAPMessage(msg)
 		if err != nil {
 			parseErrors++
-			continue // Skip messages that fail to parse
+			continue
 		}
 		if strings.HasPrefix(email.MessageID, "uid:") || strings.HasPrefix(email.MessageID, "sha256:") || strings.HasPrefix(email.MessageID, "gen:") {
 			fallbackMessageIDs++
@@ -301,10 +321,10 @@ func (s *EmailService) FetchNewEmailsWithDays(userID, accountID uint, days int) 
 	}
 
 	s.logService.LogInfo(userID, models.LogModuleEmail, "fetch", "Fetch completed", map[string]interface{}{
-		"account_id":     accountID,
-		"fetched_count":  len(fetchedEmails),
-		"parse_errors":   parseErrors,
-		"fallback_ids":   fallbackMessageIDs,
+		"account_id":    accountID,
+		"fetched_count": len(fetchedEmails),
+		"parse_errors":  parseErrors,
+		"fallback_ids":  fallbackMessageIDs,
 	})
 
 	return fetchedEmails, nil
