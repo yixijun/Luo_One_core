@@ -51,6 +51,19 @@ func runMigrations(db *gorm.DB) error {
 		return err
 	}
 
+	// 确保 Google OAuth 字段存在（GORM AutoMigrate 应该会自动添加，但为了安全起见）
+	if db.Migrator().HasTable(&models.UserSettings{}) {
+		if !db.Migrator().HasColumn(&models.UserSettings{}, "google_client_id") {
+			db.Migrator().AddColumn(&models.UserSettings{}, "google_client_id")
+		}
+		if !db.Migrator().HasColumn(&models.UserSettings{}, "google_client_secret") {
+			db.Migrator().AddColumn(&models.UserSettings{}, "google_client_secret")
+		}
+		if !db.Migrator().HasColumn(&models.UserSettings{}, "google_redirect_url") {
+			db.Migrator().AddColumn(&models.UserSettings{}, "google_redirect_url")
+		}
+	}
+
 	_ = db.Migrator().DropIndex(&models.Email{}, "message_id")
 	_ = db.Migrator().DropIndex(&models.Email{}, "idx_emails_message_id")
 
