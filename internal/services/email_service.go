@@ -1205,6 +1205,21 @@ func (s *EmailService) MarkEmailAsRead(id, userID uint) error {
 	return s.db.Model(email).Update("is_read", true).Error
 }
 
+// MarkAllAsRead marks all emails as read for a user (optionally filtered by account)
+func (s *EmailService) MarkAllAsRead(userID uint, accountID uint) (int64, error) {
+	query := s.db.Model(&models.Email{}).
+		Joins("JOIN email_accounts ON emails.account_id = email_accounts.id").
+		Where("email_accounts.user_id = ?", userID).
+		Where("emails.is_read = ?", false)
+
+	if accountID > 0 {
+		query = query.Where("emails.account_id = ?", accountID)
+	}
+
+	result := query.Update("is_read", true)
+	return result.RowsAffected, result.Error
+}
+
 // MoveToTrash moves an email to trash folder
 func (s *EmailService) MoveToTrash(id, userID uint) error {
 	email, err := s.GetEmailByIDAndUserID(id, userID)

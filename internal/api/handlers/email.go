@@ -359,6 +359,49 @@ func (h *EmailHandler) MarkAsRead(c *gin.Context) {
 	})
 }
 
+// MarkAllAsReadRequest represents the request to mark all emails as read
+type MarkAllAsReadRequest struct {
+	AccountID uint `json:"account_id"`
+}
+
+// MarkAllAsRead marks all emails as read
+// PUT /api/emails/read-all
+func (h *EmailHandler) MarkAllAsRead(c *gin.Context) {
+	userID, exists := middleware.GetUserIDFromContext(c)
+	if !exists {
+		c.JSON(http.StatusUnauthorized, gin.H{
+			"success": false,
+			"error": gin.H{
+				"code":    "AUTH_FAILED",
+				"message": "User not authenticated",
+			},
+		})
+		return
+	}
+
+	var req MarkAllAsReadRequest
+	c.ShouldBindJSON(&req) // 可选参数，不强制绑定
+
+	count, err := h.emailService.MarkAllAsRead(userID, req.AccountID)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"success": false,
+			"error": gin.H{
+				"code":    "INTERNAL_ERROR",
+				"message": "Failed to mark all emails as read",
+			},
+		})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"success": true,
+		"data": gin.H{
+			"updated_count": count,
+		},
+	})
+}
+
 
 // SendEmail sends an email
 // POST /api/emails/send
