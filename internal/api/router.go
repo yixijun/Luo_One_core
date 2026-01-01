@@ -77,7 +77,6 @@ func SetupRouter(db *gorm.DB, cfg *config.Config) (*gin.Engine, *middleware.Auth
 		// OAuth routes (some require JWT, callback doesn't)
 		oauth := api.Group("/oauth")
 		{
-			oauth.GET("/config", oauthHandler.GetOAuthConfig) // Check if OAuth is configured
 			oauth.GET("/google/callback", oauthHandler.GoogleCallback) // OAuth callback (no JWT needed)
 		}
 
@@ -140,6 +139,7 @@ func SetupRouter(db *gorm.DB, cfg *config.Config) (*gin.Engine, *middleware.Auth
 			// OAuth routes (protected - need JWT to initiate)
 			oauthProtected := protected.Group("/oauth")
 			{
+				oauthProtected.GET("/config", oauthHandler.GetOAuthConfig)
 				oauthProtected.GET("/google/auth", oauthHandler.GetGoogleAuthURL)
 			}
 		}
