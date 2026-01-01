@@ -285,6 +285,17 @@ func (s *EmailService) FetchNewEmailsWithDays(userID, accountID uint, days int) 
 		return []FetchedEmail{}, nil
 	}
 
+	// Limit to most recent 1000 emails to avoid timeout
+	const maxEmails = 1000
+	if len(seqNums) > maxEmails {
+		s.logService.LogInfo(userID, models.LogModuleEmail, "fetch", "Limiting to most recent emails", map[string]interface{}{
+			"total":   len(seqNums),
+			"limited": maxEmails,
+		})
+		// Keep only the most recent (highest sequence numbers)
+		seqNums = seqNums[len(seqNums)-maxEmails:]
+	}
+
 	// Build sequence set
 	seqSet := new(imap.SeqSet)
 	seqSet.AddNum(seqNums...)
