@@ -328,57 +328,66 @@ func (s *EmailService) FetchNewEmailsWithDays(userID, accountID uint, days int) 
 		"fetched_count": len(msgInfos),
 	})
 
-	// Batch fetch body content for all messages at once (much faster than one by one)
+	// Fetch body content in batches to avoid timeout/memory issues
+	const batchSize = 50
 	var fetchedEmails []FetchedEmail
 	var parseErrors int
-
-	// Build a map for quick lookup
-	seqNumToInfo := make(map[uint32]msgInfo)
-	for _, info := range msgInfos {
-		seqNumToInfo[info.seqNum] = info
-	}
-
-	// Fetch all bodies in one request
-	allSeqSet := new(imap.SeqSet)
-	for _, info := range msgInfos {
-		allSeqSet.AddNum(info.seqNum)
-	}
+	bodyMap := make(map[uint32][]byte)
 
 	section := &imap.BodySectionName{Peek: true}
 	bodyItems := []imap.FetchItem{section.FetchItem()}
 
-	bodyMessages := make(chan *imap.Message, 100)
-	bodyDone := make(chan error, 1)
-
-	go func() {
-		bodyDone <- c.Fetch(allSeqSet, bodyItems, bodyMessages)
-	}()
-
-	// Process body messages as they arrive
-	bodyMap := make(map[uint32][]byte)
-	for bodyMsg := range bodyMessages {
-		if bodyMsg == nil {
-			continue
+	// Process in batches
+	totalBatches := (len(msgInfos) + batchSize - 1) / batchSize
+	for batchIdx := 0; batchIdx < totalBatches; batchIdx++ {
+		start := batchIdx * batchSize
+		end := start + batchSize
+		if end > len(msgInfos) {
+			end = len(msgInfos)
 		}
-		for _, literal := range bodyMsg.Body {
-			content, err := io.ReadAll(literal)
-			if err != nil {
+		batch := msgInfos[start:end]
+
+		// Build sequence set for this batch
+		batchSeqSet := new(imap.SeqSet)
+		for _, info := range batch {
+			batchSeqSet.AddNum(info.seqNum)
+		}
+
+		bodyMessages := make(chan *imap.Message, batchSize)
+		bodyDone := make(chan error, 1)
+
+		go func() {
+			bodyDone <- c.Fetch(batchSeqSet, bodyItems, bodyMessages)
+		}()
+
+		// Process body messages as they arrive
+		for bodyMsg := range bodyMessages {
+			if bodyMsg == nil {
 				continue
 			}
-			bodyMap[bodyMsg.SeqNum] = content
+			for _, literal := range bodyMsg.Body {
+				content, err := io.ReadAll(literal)
+				if err != nil {
+					continue
+				}
+				bodyMap[bodyMsg.SeqNum] = content
+			}
 		}
-	}
 
-	if err := <-bodyDone; err != nil {
-		s.logService.LogWarn(userID, models.LogModuleEmail, "fetch", "Batch body fetch had errors", map[string]interface{}{
-			"error": err.Error(),
+		if err := <-bodyDone; err != nil {
+			s.logService.LogWarn(userID, models.LogModuleEmail, "fetch", "Batch body fetch had errors", map[string]interface{}{
+				"batch":  batchIdx + 1,
+				"total":  totalBatches,
+				"error":  err.Error(),
+			})
+		}
+
+		s.logService.LogInfo(userID, models.LogModuleEmail, "fetch", "Batch completed", map[string]interface{}{
+			"batch":        batchIdx + 1,
+			"total":        totalBatches,
+			"bodies_count": len(bodyMap),
 		})
 	}
-
-	s.logService.LogInfo(userID, models.LogModuleEmail, "fetch", "Body fetch completed", map[string]interface{}{
-		"account_id":   accountID,
-		"bodies_count": len(bodyMap),
-	})
 
 	// Now build the final email list
 	for _, info := range msgInfos {
