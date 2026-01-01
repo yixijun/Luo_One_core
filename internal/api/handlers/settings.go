@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"log"
 	"net/http"
 
 	"github.com/gin-gonic/gin"
@@ -141,8 +142,11 @@ func (h *SettingsHandler) UpdateSettings(c *gin.Context) {
 		return
 	}
 
+	log.Printf("[Settings] UpdateSettings called for userID: %d", userID)
+
 	var req UpdateSettingsRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
+		log.Printf("[Settings] UpdateSettings: Invalid request body: %v", err)
 		c.JSON(http.StatusBadRequest, gin.H{
 			"success": false,
 			"error": gin.H{
@@ -154,9 +158,21 @@ func (h *SettingsHandler) UpdateSettings(c *gin.Context) {
 		return
 	}
 
+	// Log incoming Google OAuth fields
+	if req.GoogleClientID != nil {
+		log.Printf("[Settings] UpdateSettings: GoogleClientID provided (len=%d)", len(*req.GoogleClientID))
+	}
+	if req.GoogleClientSecret != nil {
+		log.Printf("[Settings] UpdateSettings: GoogleClientSecret provided (len=%d)", len(*req.GoogleClientSecret))
+	}
+	if req.GoogleRedirectURL != nil {
+		log.Printf("[Settings] UpdateSettings: GoogleRedirectURL provided: %s", *req.GoogleRedirectURL)
+	}
+
 	// Get current settings
 	settings, err := h.userService.GetUserSettings(userID)
 	if err != nil {
+		log.Printf("[Settings] UpdateSettings: Failed to get current settings: %v", err)
 		c.JSON(http.StatusInternalServerError, gin.H{
 			"success": false,
 			"error": gin.H{
@@ -166,6 +182,9 @@ func (h *SettingsHandler) UpdateSettings(c *gin.Context) {
 		})
 		return
 	}
+
+	log.Printf("[Settings] UpdateSettings: Current settings - GoogleClientID len=%d, GoogleClientSecret len=%d",
+		len(settings.GoogleClientID), len(settings.GoogleClientSecret))
 
 	// Update only provided fields
 	if req.AIEnabled != nil {
@@ -194,12 +213,15 @@ func (h *SettingsHandler) UpdateSettings(c *gin.Context) {
 	}
 	if req.GoogleClientID != nil {
 		settings.GoogleClientID = *req.GoogleClientID
+		log.Printf("[Settings] UpdateSettings: Setting GoogleClientID to len=%d", len(settings.GoogleClientID))
 	}
 	if req.GoogleClientSecret != nil {
 		settings.GoogleClientSecret = *req.GoogleClientSecret
+		log.Printf("[Settings] UpdateSettings: Setting GoogleClientSecret to len=%d", len(settings.GoogleClientSecret))
 	}
 	if req.GoogleRedirectURL != nil {
 		settings.GoogleRedirectURL = *req.GoogleRedirectURL
+		log.Printf("[Settings] UpdateSettings: Setting GoogleRedirectURL to %s", settings.GoogleRedirectURL)
 	}
 	if req.Theme != nil {
 		settings.Theme = *req.Theme
@@ -211,6 +233,7 @@ func (h *SettingsHandler) UpdateSettings(c *gin.Context) {
 	// Save updated settings
 	err = h.userService.UpdateUserSettings(userID, settings)
 	if err != nil {
+		log.Printf("[Settings] UpdateSettings: Failed to save settings: %v", err)
 		c.JSON(http.StatusInternalServerError, gin.H{
 			"success": false,
 			"error": gin.H{
@@ -220,6 +243,8 @@ func (h *SettingsHandler) UpdateSettings(c *gin.Context) {
 		})
 		return
 	}
+
+	log.Printf("[Settings] UpdateSettings: Settings saved successfully for userID %d", userID)
 
 	// Log settings update
 	h.logService.LogInfo(userID, models.LogModuleAuth, "settings_update", "User settings updated", map[string]interface{}{

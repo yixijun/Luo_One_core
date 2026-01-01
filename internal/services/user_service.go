@@ -2,6 +2,7 @@ package services
 
 import (
 	"errors"
+	"log"
 
 	"github.com/luo-one/core/internal/database/models"
 	"github.com/luo-one/core/internal/user"
@@ -223,9 +224,12 @@ func (s *UserService) ResetPassword(id uint, newPassword string) error {
 
 // GetUserSettings retrieves user settings
 func (s *UserService) GetUserSettings(userID uint) (*models.UserSettings, error) {
+	log.Printf("[UserService] GetUserSettings called for userID: %d", userID)
+	
 	var settings models.UserSettings
 	if err := s.db.Where("user_id = ?", userID).First(&settings).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
+			log.Printf("[UserService] GetUserSettings: No settings found for userID %d, creating defaults", userID)
 			// Create default settings if not found
 			settings = models.UserSettings{
 				UserID:          userID,
@@ -236,19 +240,44 @@ func (s *UserService) GetUserSettings(userID uint) (*models.UserSettings, error)
 				JudgeImportance: true,
 			}
 			if err := s.db.Create(&settings).Error; err != nil {
+				log.Printf("[UserService] GetUserSettings: Failed to create default settings: %v", err)
 				return nil, err
 			}
 		} else {
+			log.Printf("[UserService] GetUserSettings: Database error: %v", err)
 			return nil, err
 		}
 	}
+	
+	log.Printf("[UserService] GetUserSettings: Retrieved settings ID=%d, GoogleClientID len=%d, GoogleClientSecret len=%d",
+		settings.ID, len(settings.GoogleClientID), len(settings.GoogleClientSecret))
+	
 	return &settings, nil
 }
 
 // UpdateUserSettings updates user settings
 func (s *UserService) UpdateUserSettings(userID uint, settings *models.UserSettings) error {
+	log.Printf("[UserService] UpdateUserSettings called for userID: %d", userID)
+	log.Printf("[UserService] UpdateUserSettings: Settings to save - GoogleClientID len=%d, GoogleClientSecret len=%d, GoogleRedirectURL=%s",
+		len(settings.GoogleClientID), len(settings.GoogleClientSecret), settings.GoogleRedirectURL)
+	
 	settings.UserID = userID
-	return s.db.Where("user_id = ?", userID).Save(settings).Error
+	err := s.db.Where("user_id = ?", userID).Save(settings).Error
+	
+	if err != nil {
+		log.Printf("[UserService] UpdateUserSettings: Save failed: %v", err)
+	} else {
+		log.Printf("[UserService] UpdateUserSettings: Save successful")
+		
+		// Verify the save by reading back
+		var verifySettings models.UserSettings
+		if verifyErr := s.db.Where("user_id = ?", userID).First(&verifySettings).Error; verifyErr == nil {
+			log.Printf("[UserService] UpdateUserSettings: Verification - GoogleClientID len=%d, GoogleClientSecret len=%d",
+				len(verifySettings.GoogleClientID), len(verifySettings.GoogleClientSecret))
+		}
+	}
+	
+	return err
 }
 
 // IsPasswordHashed checks if a string looks like a bcrypt hash

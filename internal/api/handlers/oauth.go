@@ -6,6 +6,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"log"
 	"net/http"
 	"os"
 	"sync"
@@ -52,10 +53,18 @@ func NewOAuthHandler(accountService *services.AccountService, userService *servi
 
 // getGoogleOAuthConfig returns the Google OAuth2 config for a user
 func (h *OAuthHandler) getGoogleOAuthConfigForUser(userID uint) (*oauth2.Config, error) {
+	log.Printf("[OAuth] getGoogleOAuthConfigForUser called for userID: %d", userID)
+	
 	settings, err := h.userService.GetUserSettings(userID)
 	if err != nil {
+		log.Printf("[OAuth] Error getting user settings for userID %d: %v", userID, err)
 		return nil, err
 	}
+
+	log.Printf("[OAuth] User settings retrieved for userID %d:", userID)
+	log.Printf("[OAuth]   - GoogleClientID from DB: '%s' (len=%d)", maskString(settings.GoogleClientID), len(settings.GoogleClientID))
+	log.Printf("[OAuth]   - GoogleClientSecret from DB: '%s' (len=%d)", maskString(settings.GoogleClientSecret), len(settings.GoogleClientSecret))
+	log.Printf("[OAuth]   - GoogleRedirectURL from DB: '%s'", settings.GoogleRedirectURL)
 
 	clientID := settings.GoogleClientID
 	clientSecret := settings.GoogleClientSecret
@@ -64,16 +73,21 @@ func (h *OAuthHandler) getGoogleOAuthConfigForUser(userID uint) (*oauth2.Config,
 	// 如果数据库没有配置，回退到环境变量
 	if clientID == "" {
 		clientID = os.Getenv("GOOGLE_CLIENT_ID")
+		log.Printf("[OAuth]   - GoogleClientID from ENV: '%s' (len=%d)", maskString(clientID), len(clientID))
 	}
 	if clientSecret == "" {
 		clientSecret = os.Getenv("GOOGLE_CLIENT_SECRET")
+		log.Printf("[OAuth]   - GoogleClientSecret from ENV: '%s' (len=%d)", maskString(clientSecret), len(clientSecret))
 	}
 	if redirectURL == "" {
 		redirectURL = os.Getenv("GOOGLE_REDIRECT_URL")
 		if redirectURL == "" {
 			redirectURL = "http://localhost:8080/api/oauth/google/callback"
 		}
+		log.Printf("[OAuth]   - GoogleRedirectURL from ENV/default: '%s'", redirectURL)
 	}
+
+	log.Printf("[OAuth] Final config - ClientID empty: %v, ClientSecret empty: %v", clientID == "", clientSecret == "")
 
 	return &oauth2.Config{
 		ClientID:     clientID,
@@ -85,6 +99,17 @@ func (h *OAuthHandler) getGoogleOAuthConfigForUser(userID uint) (*oauth2.Config,
 		},
 		Endpoint: google.Endpoint,
 	}, nil
+}
+
+// maskString masks a string for logging (shows first 4 and last 4 chars)
+func maskString(s string) string {
+	if len(s) <= 8 {
+		if len(s) == 0 {
+			return "(empty)"
+		}
+		return "****"
+	}
+	return s[:4] + "****" + s[len(s)-4:]
 }
 
 // generateState generates a random state token
@@ -296,8 +321,11 @@ func (h *OAuthHandler) cleanupOldStates() {
 // GetOAuthConfig returns the OAuth configuration status
 // GET /api/oauth/config
 func (h *OAuthHandler) GetOAuthConfig(c *gin.Context) {
+	log.Printf("[OAuth] GetOAuthConfig called")
+	
 	userID, exists := middleware.GetUserIDFromContext(c)
 	if !exists {
+		log.Printf("[OAuth] GetOAuthConfig: User not authenticated")
 		c.JSON(http.StatusUnauthorized, gin.H{
 			"success": false,
 			"error": gin.H{
@@ -308,8 +336,11 @@ func (h *OAuthHandler) GetOAuthConfig(c *gin.Context) {
 		return
 	}
 
+	log.Printf("[OAuth] GetOAuthConfig: userID=%d", userID)
+
 	config, err := h.getGoogleOAuthConfigForUser(userID)
 	if err != nil {
+		log.Printf("[OAuth] GetOAuthConfig: Error getting config: %v", err)
 		c.JSON(http.StatusOK, gin.H{
 			"success": true,
 			"data": gin.H{
@@ -319,10 +350,13 @@ func (h *OAuthHandler) GetOAuthConfig(c *gin.Context) {
 		return
 	}
 
+	googleEnabled := config.ClientID != "" && config.ClientSecret != ""
+	log.Printf("[OAuth] GetOAuthConfig: google_enabled=%v", googleEnabled)
+
 	c.JSON(http.StatusOK, gin.H{
 		"success": true,
 		"data": gin.H{
-			"google_enabled": config.ClientID != "" && config.ClientSecret != "",
+			"google_enabled": googleEnabled,
 		},
 	})
 }
