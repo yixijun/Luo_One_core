@@ -699,6 +699,7 @@ func (s *EmailService) GetEmailByID(id uint) (*models.Email, error) {
 }
 
 // GetEmailByIDAndUserID retrieves an email by ID and verifies user ownership through account
+// If the email body is empty, it will fetch from IMAP
 func (s *EmailService) GetEmailByIDAndUserID(id, userID uint) (*models.Email, error) {
 	var email models.Email
 	if err := s.db.Preload("ProcessedResult").First(&email, id).Error; err != nil {
@@ -709,12 +710,103 @@ func (s *EmailService) GetEmailByIDAndUserID(id, userID uint) (*models.Email, er
 	}
 
 	// Verify user owns the account
-	_, err := s.accountService.GetAccountByIDAndUserID(email.AccountID, userID)
+	account, err := s.accountService.GetAccountByIDAndUserID(email.AccountID, userID)
 	if err != nil {
 		return nil, ErrEmailNotFound
 	}
 
+	// If body is empty, fetch from IMAP
+	if email.Body == "" && email.HTMLBody == "" {
+		body, htmlBody, err := s.fetchEmailBodyFromIMAP(account, email.MessageID)
+		if err == nil && (body != "" || htmlBody != "") {
+			email.Body = body
+			email.HTMLBody = htmlBody
+			// Update in database
+			s.db.Model(&email).Updates(map[string]interface{}{
+				"body":      body,
+				"html_body": htmlBody,
+			})
+		}
+	}
+
 	return &email, nil
+}
+
+// fetchEmailBodyFromIMAP fetches email body from IMAP server by message ID
+func (s *EmailService) fetchEmailBodyFromIMAP(account *models.EmailAccount, messageID string) (string, string, error) {
+	c, err := s.connectIMAP(account)
+	if err != nil {
+		return "", "", err
+	}
+	defer c.Logout()
+
+	_, err = c.Select("INBOX", false)
+	if err != nil {
+		return "", "", err
+	}
+
+	// Search by message ID
+	criteria := imap.NewSearchCriteria()
+	criteria.Header.Add("Message-Id", messageID)
+	seqNums, err := c.Search(criteria)
+	if err != nil || len(seqNums) == 0 {
+		// Try without angle brackets
+		if strings.HasPrefix(messageID, "<") {
+			criteria = imap.NewSearchCriteria()
+			criteria.Header.Add("Message-Id", strings.Trim(messageID, "<>"))
+			seqNums, err = c.Search(criteria)
+		}
+		if err != nil || len(seqNums) == 0 {
+			return "", "", fmt.Errorf("message not found")
+		}
+	}
+
+	seqSet := new(imap.SeqSet)
+	seqSet.AddNum(seqNums[0])
+
+	section := &imap.BodySectionName{Peek: true}
+	items := []imap.FetchItem{section.FetchItem()}
+
+	messages := make(chan *imap.Message, 1)
+	done := make(chan error, 1)
+
+	go func() {
+		done <- c.Fetch(seqSet, items, messages)
+	}()
+
+	var body, htmlBody string
+	for msg := range messages {
+		if msg == nil {
+			continue
+		}
+		for _, literal := range msg.Body {
+			content, err := io.ReadAll(literal)
+			if err != nil {
+				continue
+			}
+
+			r := bytes.NewReader(content)
+			entity, err := message.Read(r)
+			if err != nil {
+				r.Seek(0, io.SeekStart)
+				m, err := mail.ReadMessage(r)
+				if err == nil {
+					b, _ := io.ReadAll(m.Body)
+					body = string(b)
+				}
+				continue
+			}
+
+			// Parse the message
+			fetched := &FetchedEmail{}
+			s.parseMessageEntity(entity, fetched)
+			body = fetched.Body
+			htmlBody = fetched.HTMLBody
+		}
+	}
+
+	<-done
+	return body, htmlBody, nil
 }
 
 
