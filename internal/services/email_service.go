@@ -921,6 +921,14 @@ func (s *EmailService) parseMessageEntity(entity *message.Entity, email *Fetched
 			}
 		}
 		
+		// 解码 MIME 编码的文件名 (如 =?utf-8?B?...?=)
+		if filename != "" {
+			dec := new(mime.WordDecoder)
+			if decoded, err := dec.DecodeHeader(filename); err == nil {
+				filename = decoded
+			}
+		}
+		
 		// 非文本类型且有内容的也可能是附件（如图片等）
 		if !isAttachment && !strings.HasPrefix(mediaType, "text/") && mediaType != "" {
 			isAttachment = true
@@ -2317,8 +2325,9 @@ func randomString(n int) string {
 
 // AttachmentInfo represents information about an attachment
 type AttachmentInfo struct {
-	Filename string `json:"filename"`
-	Size     int64  `json:"size"`
+	Filename     string `json:"filename"`      // 解码后的显示名称
+	RawFilename  string `json:"raw_filename"`  // 原始文件名（用于下载）
+	Size         int64  `json:"size"`
 	Path     string `json:"path"`
 }
 
@@ -2417,9 +2426,16 @@ func (s *EmailService) ListAttachments(userID, emailID uint) ([]AttachmentInfo, 
 			if err != nil {
 				continue
 			}
+			// 解码 MIME 编码的文件名用于显示
+			displayName := filename
+			dec := new(mime.WordDecoder)
+			if decoded, err := dec.DecodeHeader(filename); err == nil {
+				displayName = decoded
+			}
 			attachments = append(attachments, AttachmentInfo{
-				Filename: filename,
-				Size:     int64(len(content)),
+				Filename:    displayName,
+				RawFilename: filename,
+				Size:        int64(len(content)),
 			})
 		}
 		return attachments, nil
@@ -2508,9 +2524,16 @@ func (s *EmailService) ParseAndSaveAttachments(userID, emailID uint) ([]Attachme
 		for _, filename := range existingAttachments {
 			content, err := s.userStorage.GetAttachment(userID, emailID, filename)
 			if err == nil {
+				// 解码 MIME 编码的文件名用于显示
+				displayName := filename
+				dec := new(mime.WordDecoder)
+				if decoded, err := dec.DecodeHeader(filename); err == nil {
+					displayName = decoded
+				}
 				result = append(result, AttachmentInfo{
-					Filename: filename,
-					Size:     int64(len(content)),
+					Filename:    displayName,
+					RawFilename: filename,
+					Size:        int64(len(content)),
 				})
 			}
 		}
@@ -2551,8 +2574,9 @@ func (s *EmailService) ParseAndSaveAttachments(userID, emailID uint) ([]Attachme
 			continue
 		}
 		result = append(result, AttachmentInfo{
-			Filename: att.Filename,
-			Size:     int64(len(att.Content)),
+			Filename:    att.Filename,
+			RawFilename: att.Filename,
+			Size:        int64(len(att.Content)),
 		})
 	}
 
