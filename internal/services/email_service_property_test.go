@@ -5,7 +5,9 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
+	"github.com/emersion/go-imap"
 	"github.com/leanovate/gopter"
 	"github.com/leanovate/gopter/gen"
 	"github.com/leanovate/gopter/prop"
@@ -545,4 +547,53 @@ func hasPathPrefix(path, prefix string) bool {
 		return false
 	}
 	return true
+}
+
+type testLiteral struct {
+	*bytes.Reader
+}
+
+func (l testLiteral) Len() int {
+	return l.Reader.Len()
+}
+
+func TestParseIMAPMessage_GeneratesMessageIDWhenMissing(t *testing.T) {
+	s := &EmailService{}
+
+	raw := []byte("Subject: test\r\n\r\nhello")
+	msg := &imap.Message{
+		Uid: 123,
+		Envelope: &imap.Envelope{
+			MessageId: "",
+			Subject:   "test",
+			Date:      time.Now(),
+		},
+		Body: map[*imap.BodySectionName]imap.Literal{
+			&imap.BodySectionName{}: testLiteral{Reader: bytes.NewReader(raw)},
+		},
+	}
+
+	email, err := s.parseIMAPMessage(msg)
+	if err != nil {
+		t.Fatalf("parseIMAPMessage returned error: %v", err)
+	}
+	if email.MessageID != "uid:123" {
+		t.Fatalf("expected MessageID uid:123, got %q", email.MessageID)
+	}
+}
+
+func TestEmailModel_AllowsSameMessageIDAcrossAccounts(t *testing.T) {
+	db, cleanup := setupEmailTestDB(t)
+	defer cleanup()
+
+	messageID := "<same@test>"
+	if err := db.Create(&models.Email{AccountID: 1, MessageID: messageID, Date: time.Now()}).Error; err != nil {
+		t.Fatalf("failed to create email for account 1: %v", err)
+	}
+	if err := db.Create(&models.Email{AccountID: 2, MessageID: messageID, Date: time.Now()}).Error; err != nil {
+		t.Fatalf("failed to create email for account 2: %v", err)
+	}
+	if err := db.Create(&models.Email{AccountID: 1, MessageID: messageID, Date: time.Now()}).Error; err == nil {
+		t.Fatalf("expected unique constraint violation for same account_id+message_id")
+	}
 }

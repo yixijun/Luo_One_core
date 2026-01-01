@@ -2,7 +2,9 @@ package services
 
 import (
 	"bytes"
+	"crypto/sha256"
 	"crypto/tls"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -61,6 +63,7 @@ func NewEmailService(db *gorm.DB, accountService *AccountService, userManager *u
 
 // FetchedEmail represents an email fetched from IMAP
 type FetchedEmail struct {
+	UID            uint32
 	MessageID      string
 	Subject        string
 	From           string
@@ -166,83 +169,77 @@ func (s *EmailService) FetchNewEmailsWithDays(userID, accountID uint, days int) 
 		return []FetchedEmail{}, nil
 	}
 
-	var seqSet *imap.SeqSet
-	
+	criteria := imap.NewSearchCriteria()
 	if days == -1 {
-		// Fetch all emails
-		seqSet = new(imap.SeqSet)
-		seqSet.AddRange(1, mbox.Messages)
 		s.logService.LogInfo(userID, models.LogModuleEmail, "fetch", "Fetching all emails", map[string]interface{}{
 			"total": mbox.Messages,
 		})
 	} else if days == 0 {
-		// Incremental sync: use last sync time, or fetch all if never synced
 		if !account.LastSyncAt.IsZero() {
-			criteria := imap.NewSearchCriteria()
 			criteria.Since = account.LastSyncAt
-			uids, err := c.Search(criteria)
-			if err != nil {
-				return nil, fmt.Errorf("failed to search messages: %v", err)
-			}
 			s.logService.LogInfo(userID, models.LogModuleEmail, "fetch", "Incremental sync", map[string]interface{}{
-				"since":      account.LastSyncAt,
-				"found_uids": len(uids),
+				"since": account.LastSyncAt,
 			})
-			if len(uids) == 0 {
-				return []FetchedEmail{}, nil
-			}
-			seqSet = new(imap.SeqSet)
-			seqSet.AddNum(uids...)
 		} else {
-			// Never synced before, fetch all
-			seqSet = new(imap.SeqSet)
-			seqSet.AddRange(1, mbox.Messages)
 			s.logService.LogInfo(userID, models.LogModuleEmail, "fetch", "First sync, fetching all emails", map[string]interface{}{
 				"total": mbox.Messages,
 			})
 		}
 	} else {
-		// Fetch emails from specified days
-		criteria := imap.NewSearchCriteria()
 		criteria.Since = time.Now().AddDate(0, 0, -days)
 		s.logService.LogInfo(userID, models.LogModuleEmail, "fetch", "Fetching emails by days", map[string]interface{}{
 			"days":  days,
 			"since": criteria.Since,
 		})
-		uids, err := c.Search(criteria)
-		if err != nil {
-			return nil, fmt.Errorf("failed to search messages: %v", err)
-		}
-		
-		s.logService.LogInfo(userID, models.LogModuleEmail, "fetch", "Search completed", map[string]interface{}{
-			"since":      criteria.Since,
-			"found_uids": len(uids),
-		})
-		
-		if len(uids) == 0 {
-			return []FetchedEmail{}, nil
-		}
-		
-		seqSet = new(imap.SeqSet)
-		seqSet.AddNum(uids...)
 	}
 
+	uids, err := c.UidSearch(criteria)
+	if err != nil {
+		return nil, fmt.Errorf("failed to uid search messages: %v", err)
+	}
+	if len(uids) == 0 && days == 0 && !account.LastSyncAt.IsZero() {
+		var existingCount int64
+		_ = s.db.Model(&models.Email{}).Where("account_id = ?", accountID).Count(&existingCount).Error
+		if existingCount == 0 {
+			uids, err = c.UidSearch(imap.NewSearchCriteria())
+			if err != nil {
+				return nil, fmt.Errorf("failed to uid search messages: %v", err)
+			}
+		}
+	}
+
+	s.logService.LogInfo(userID, models.LogModuleEmail, "fetch", "Search completed", map[string]interface{}{
+		"account_id": accountID,
+		"found_uids": len(uids),
+	})
+
+	if len(uids) == 0 {
+		return []FetchedEmail{}, nil
+	}
+
+	seqSet := new(imap.SeqSet)
+	seqSet.AddNum(uids...)
+
 	// Fetch messages
-	items := []imap.FetchItem{imap.FetchEnvelope, imap.FetchRFC822, imap.FetchBodyStructure}
+	items := []imap.FetchItem{imap.FetchUid, imap.FetchEnvelope, imap.FetchRFC822, imap.FetchBodyStructure}
 	messages := make(chan *imap.Message, 100)
 	done := make(chan error, 1)
 
 	go func() {
-		done <- c.Fetch(seqSet, items, messages)
+		done <- c.UidFetch(seqSet, items, messages)
 	}()
 
 	var fetchedEmails []FetchedEmail
 	var parseErrors int
+	var fallbackMessageIDs int
 	for msg := range messages {
 		email, err := s.parseIMAPMessage(msg)
 		if err != nil {
 			parseErrors++
 			continue // Skip messages that fail to parse
+		}
+		if strings.HasPrefix(email.MessageID, "uid:") || strings.HasPrefix(email.MessageID, "sha256:") || strings.HasPrefix(email.MessageID, "gen:") {
+			fallbackMessageIDs++
 		}
 		fetchedEmails = append(fetchedEmails, email)
 	}
@@ -255,6 +252,7 @@ func (s *EmailService) FetchNewEmailsWithDays(userID, accountID uint, days int) 
 		"account_id":     accountID,
 		"fetched_count":  len(fetchedEmails),
 		"parse_errors":   parseErrors,
+		"fallback_ids":   fallbackMessageIDs,
 	})
 
 	return fetchedEmails, nil
@@ -264,6 +262,7 @@ func (s *EmailService) FetchNewEmailsWithDays(userID, accountID uint, days int) 
 // parseIMAPMessage parses an IMAP message into a FetchedEmail
 func (s *EmailService) parseIMAPMessage(msg *imap.Message) (FetchedEmail, error) {
 	email := FetchedEmail{}
+	email.UID = msg.Uid
 
 	if msg.Envelope != nil {
 		email.MessageID = msg.Envelope.MessageId
@@ -295,13 +294,41 @@ func (s *EmailService) parseIMAPMessage(msg *imap.Message) (FetchedEmail, error)
 			r.Seek(0, io.SeekStart)
 			m, err := mail.ReadMessage(r)
 			if err == nil {
+				if email.MessageID == "" {
+					messageID := strings.TrimSpace(m.Header.Get("Message-Id"))
+					if messageID == "" {
+						messageID = strings.TrimSpace(m.Header.Get("Message-ID"))
+					}
+					email.MessageID = messageID
+				}
 				body, _ := io.ReadAll(m.Body)
 				email.Body = string(body)
 			}
 			continue
 		}
 
+		if email.MessageID == "" {
+			messageID := strings.TrimSpace(entity.Header.Get("Message-Id"))
+			if messageID == "" {
+				messageID = strings.TrimSpace(entity.Header.Get("Message-ID"))
+			}
+			email.MessageID = messageID
+		}
+
 		s.parseMessageEntity(entity, &email)
+	}
+
+	if email.MessageID == "" {
+		if email.UID != 0 {
+			email.MessageID = fmt.Sprintf("uid:%d", email.UID)
+		} else if len(email.RawContent) > 0 {
+			sum := sha256.Sum256(email.RawContent)
+			email.MessageID = "sha256:" + hex.EncodeToString(sum[:])
+		} else {
+			seed := fmt.Sprintf("%d|%s|%s|%s", email.Date.UnixNano(), email.Subject, email.From, strings.Join(email.To, ","))
+			sum := sha256.Sum256([]byte(seed))
+			email.MessageID = "gen:" + hex.EncodeToString(sum[:16])
+		}
 	}
 
 	// Check for attachments from body structure
@@ -382,6 +409,8 @@ func (s *EmailService) SyncAndSaveEmails(userID, accountID uint) (int, error) {
 
 // SyncAndSaveEmailsWithDays fetches emails within specified days and saves them
 func (s *EmailService) SyncAndSaveEmailsWithDays(userID, accountID uint, days int) (int, error) {
+	syncStartedAt := time.Now()
+
 	// Ensure account directories exist
 	if err := s.userManager.CreateAccountDirectories(userID, accountID); err != nil {
 		return 0, err
@@ -397,7 +426,7 @@ func (s *EmailService) SyncAndSaveEmailsWithDays(userID, accountID uint, days in
 	for _, fetched := range fetchedEmails {
 		// Check if email already exists
 		var existing models.Email
-		if err := s.db.Where("message_id = ?", fetched.MessageID).First(&existing).Error; err == nil {
+		if err := s.db.Where("account_id = ? AND message_id = ?", accountID, fetched.MessageID).First(&existing).Error; err == nil {
 			continue // Email already exists
 		}
 
@@ -454,7 +483,7 @@ func (s *EmailService) SyncAndSaveEmailsWithDays(userID, accountID uint, days in
 	}
 
 	// Update last sync time
-	s.db.Model(&models.EmailAccount{}).Where("id = ?", accountID).Update("last_sync_at", time.Now())
+	s.db.Model(&models.EmailAccount{}).Where("id = ?", accountID).Update("last_sync_at", syncStartedAt)
 
 	// Log sync completion
 	s.logService.LogInfo(userID, models.LogModuleEmail, "sync", "Email sync completed", map[string]interface{}{

@@ -51,6 +51,9 @@ func runMigrations(db *gorm.DB) error {
 		return err
 	}
 
+	_ = db.Migrator().DropIndex(&models.Email{}, "message_id")
+	_ = db.Migrator().DropIndex(&models.Email{}, "idx_emails_message_id")
+
 	// Update existing emails with empty folder to 'inbox'
 	db.Model(&models.Email{}).Where("folder = '' OR folder IS NULL").Update("folder", models.FolderInbox)
 

@@ -15,8 +15,8 @@ const (
 // Email represents an email message
 type Email struct {
 	ID             uint      `gorm:"primaryKey" json:"id"`
-	AccountID      uint      `gorm:"index;not null" json:"account_id"`
-	MessageID      string    `gorm:"uniqueIndex;size:255;not null" json:"message_id"`
+	AccountID      uint      `gorm:"index;not null;uniqueIndex:idx_account_message_id" json:"account_id"`
+	MessageID      string    `gorm:"size:255;not null;uniqueIndex:idx_account_message_id" json:"message_id"`
 	Subject        string    `gorm:"size:500" json:"subject"`
 	FromAddr       string    `gorm:"size:255" json:"from"`
 	ToAddrs        string    `gorm:"type:text" json:"to"` // JSON array stored as string
