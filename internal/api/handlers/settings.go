@@ -30,11 +30,24 @@ type UserSettingsResponse struct {
 	AIEnabled       bool   `json:"ai_enabled"`
 	AIProvider      string `json:"ai_provider"`
 	AIAPIKey        string `json:"ai_api_key"`
+	AIBaseURL       string `json:"ai_base_url"`
 	AIModel         string `json:"ai_model"`
 	ExtractCode     bool   `json:"extract_code"`
 	DetectAd        bool   `json:"detect_ad"`
 	Summarize       bool   `json:"summarize"`
 	JudgeImportance bool   `json:"judge_importance"`
+
+	// 处理模式
+	ExtractCodeMode     string `json:"extract_code_mode"`
+	DetectAdMode        string `json:"detect_ad_mode"`
+	SummarizeMode       string `json:"summarize_mode"`
+	JudgeImportanceMode string `json:"judge_importance_mode"`
+
+	// 自定义提示词
+	PromptExtractCode     string `json:"prompt_extract_code"`
+	PromptDetectAd        string `json:"prompt_detect_ad"`
+	PromptSummarize       string `json:"prompt_summarize"`
+	PromptJudgeImportance string `json:"prompt_judge_importance"`
 
 	// Google OAuth 配置
 	GoogleClientID     string `json:"google_client_id"`
@@ -51,11 +64,24 @@ type UpdateSettingsRequest struct {
 	AIEnabled       *bool   `json:"ai_enabled"`
 	AIProvider      *string `json:"ai_provider"`
 	AIAPIKey        *string `json:"ai_api_key"`
+	AIBaseURL       *string `json:"ai_base_url"`
 	AIModel         *string `json:"ai_model"`
 	ExtractCode     *bool   `json:"extract_code"`
 	DetectAd        *bool   `json:"detect_ad"`
 	Summarize       *bool   `json:"summarize"`
 	JudgeImportance *bool   `json:"judge_importance"`
+
+	// 处理模式
+	ExtractCodeMode     *string `json:"extract_code_mode"`
+	DetectAdMode        *string `json:"detect_ad_mode"`
+	SummarizeMode       *string `json:"summarize_mode"`
+	JudgeImportanceMode *string `json:"judge_importance_mode"`
+
+	// 自定义提示词
+	PromptExtractCode     *string `json:"prompt_extract_code"`
+	PromptDetectAd        *string `json:"prompt_detect_ad"`
+	PromptSummarize       *string `json:"prompt_summarize"`
+	PromptJudgeImportance *string `json:"prompt_judge_importance"`
 
 	// Google OAuth 配置
 	GoogleClientID     *string `json:"google_client_id"`
@@ -78,19 +104,28 @@ func toSettingsResponse(settings *models.UserSettings) UserSettingsResponse {
 		font = "system"
 	}
 	return UserSettingsResponse{
-		AIEnabled:          settings.AIEnabled,
-		AIProvider:         settings.AIProvider,
-		AIAPIKey:           settings.AIAPIKey,
-		AIModel:            settings.AIModel,
-		ExtractCode:        settings.ExtractCode,
-		DetectAd:           settings.DetectAd,
-		Summarize:          settings.Summarize,
-		JudgeImportance:    settings.JudgeImportance,
-		GoogleClientID:     settings.GoogleClientID,
-		GoogleClientSecret: settings.GoogleClientSecret,
-		GoogleRedirectURL:  settings.GoogleRedirectURL,
-		Theme:              theme,
-		Font:               font,
+		AIEnabled:             settings.AIEnabled,
+		AIProvider:            settings.AIProvider,
+		AIAPIKey:              settings.AIAPIKey,
+		AIBaseURL:             settings.AIBaseURL,
+		AIModel:               settings.AIModel,
+		ExtractCode:           settings.ExtractCode,
+		DetectAd:              settings.DetectAd,
+		Summarize:             settings.Summarize,
+		JudgeImportance:       settings.JudgeImportance,
+		ExtractCodeMode:       settings.ExtractCodeMode,
+		DetectAdMode:          settings.DetectAdMode,
+		SummarizeMode:         settings.SummarizeMode,
+		JudgeImportanceMode:   settings.JudgeImportanceMode,
+		PromptExtractCode:     settings.PromptExtractCode,
+		PromptDetectAd:        settings.PromptDetectAd,
+		PromptSummarize:       settings.PromptSummarize,
+		PromptJudgeImportance: settings.PromptJudgeImportance,
+		GoogleClientID:        settings.GoogleClientID,
+		GoogleClientSecret:    settings.GoogleClientSecret,
+		GoogleRedirectURL:     settings.GoogleRedirectURL,
+		Theme:                 theme,
+		Font:                  font,
 	}
 }
 
@@ -197,6 +232,9 @@ func (h *SettingsHandler) UpdateSettings(c *gin.Context) {
 	if req.AIAPIKey != nil {
 		settings.AIAPIKey = *req.AIAPIKey
 	}
+	if req.AIBaseURL != nil {
+		settings.AIBaseURL = *req.AIBaseURL
+	}
 	if req.AIModel != nil {
 		settings.AIModel = *req.AIModel
 	}
@@ -211,6 +249,32 @@ func (h *SettingsHandler) UpdateSettings(c *gin.Context) {
 	}
 	if req.JudgeImportance != nil {
 		settings.JudgeImportance = *req.JudgeImportance
+	}
+	// 处理模式
+	if req.ExtractCodeMode != nil {
+		settings.ExtractCodeMode = *req.ExtractCodeMode
+	}
+	if req.DetectAdMode != nil {
+		settings.DetectAdMode = *req.DetectAdMode
+	}
+	if req.SummarizeMode != nil {
+		settings.SummarizeMode = *req.SummarizeMode
+	}
+	if req.JudgeImportanceMode != nil {
+		settings.JudgeImportanceMode = *req.JudgeImportanceMode
+	}
+	// 自定义提示词
+	if req.PromptExtractCode != nil {
+		settings.PromptExtractCode = *req.PromptExtractCode
+	}
+	if req.PromptDetectAd != nil {
+		settings.PromptDetectAd = *req.PromptDetectAd
+	}
+	if req.PromptSummarize != nil {
+		settings.PromptSummarize = *req.PromptSummarize
+	}
+	if req.PromptJudgeImportance != nil {
+		settings.PromptJudgeImportance = *req.PromptJudgeImportance
 	}
 	if req.GoogleClientID != nil {
 		settings.GoogleClientID = *req.GoogleClientID
