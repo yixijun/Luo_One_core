@@ -22,6 +22,9 @@ var verificationCodePatterns = []*regexp.Regexp{
 	regexp.MustCompile(`(?i)(?:code|pin|otp)[：:\s]*[\[【\(]([A-Za-z0-9]{4,8})[\]】\)]`),
 }
 
+// Fallback pattern for standalone codes (only used when email is confirmed to be verification-related)
+var standaloneCodePattern = regexp.MustCompile(`(?:^|[\s\p{P}])([A-Za-z0-9]{4,8})(?:[\s\p{P}]|$)`)
+
 // Keywords that indicate an email contains a verification code
 var verificationKeywords = []string{
 	"验证码", "校验码", "确认码", "动态码", "安全码", "授权码", "登录码", "登陆码",
@@ -86,6 +89,24 @@ func ExtractVerificationCode(content string) string {
 		}
 	}
 
+	// If no candidates found with specific patterns, try standalone pattern
+	// Only for emails that strongly look like verification emails
+	if len(candidates) == 0 && stronglyLooksLikeVerificationEmail(lowerContent) {
+		matches := standaloneCodePattern.FindAllStringSubmatch(content, -1)
+		for _, match := range matches {
+			if len(match) >= 2 {
+				code := strings.TrimSpace(match[1])
+				if isValidCode(code) && looksLikeCode(code) {
+					candidates = append(candidates, CodeCandidate{
+						Code:       code,
+						Confidence: 0.5,
+						Position:   0,
+					})
+				}
+			}
+		}
+	}
+
 	if len(candidates) == 0 {
 		return ""
 	}
@@ -99,6 +120,63 @@ func ExtractVerificationCode(content string) string {
 	})
 
 	return candidates[0].Code
+}
+
+// stronglyLooksLikeVerificationEmail checks if the email is very likely a verification code email
+func stronglyLooksLikeVerificationEmail(lowerContent string) bool {
+	strongKeywords := []string{
+		"验证码", "校验码", "确认码", "动态码",
+		"verification code", "security code", "one-time",
+		"verify your email", "confirm your email",
+		"验证您的", "确认您的",
+	}
+	for _, keyword := range strongKeywords {
+		if strings.Contains(lowerContent, keyword) {
+			return true
+		}
+	}
+	return false
+}
+
+// looksLikeCode checks if a string looks like a verification code (not a common word)
+func looksLikeCode(code string) bool {
+	// Must have at least one digit
+	hasDigit := false
+	for _, c := range code {
+		if c >= '0' && c <= '9' {
+			hasDigit = true
+			break
+		}
+	}
+	if !hasDigit {
+		return false
+	}
+
+	// Reject if it's all letters (likely a word)
+	allLetters := true
+	for _, c := range code {
+		if c < 'A' || (c > 'Z' && c < 'a') || c > 'z' {
+			allLetters = false
+			break
+		}
+	}
+	if allLetters {
+		return false
+	}
+
+	// Reject common words that might slip through
+	lowerCode := strings.ToLower(code)
+	commonWords := []string{
+		"hello", "world", "email", "click", "here", "view", "open",
+		"from", "sent", "date", "time", "year", "month", "day",
+	}
+	for _, word := range commonWords {
+		if lowerCode == word {
+			return false
+		}
+	}
+
+	return true
 }
 
 // looksLikeVerificationEmail checks if the content appears to be a verification code email
