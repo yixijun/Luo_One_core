@@ -32,6 +32,12 @@ type UserSettings struct {
 	Summarize       bool   `gorm:"default:false" json:"summarize"`
 	JudgeImportance bool   `gorm:"default:true" json:"judge_importance"`
 
+	// 每个功能的处理模式: "local" 或 "ai"
+	ExtractCodeMode     string `gorm:"size:20;default:'local'" json:"extract_code_mode"`
+	DetectAdMode        string `gorm:"size:20;default:'local'" json:"detect_ad_mode"`
+	SummarizeMode       string `gorm:"size:20;default:'local'" json:"summarize_mode"`
+	JudgeImportanceMode string `gorm:"size:20;default:'local'" json:"judge_importance_mode"`
+
 	// Google OAuth 配置
 	GoogleClientID     string `gorm:"size:500" json:"google_client_id"`
 	GoogleClientSecret string `gorm:"size:500" json:"google_client_secret"`

@@ -37,9 +37,14 @@ type ProcessingConfig struct {
 	DetectAd        bool
 	Summarize       bool
 	JudgeImportance bool
-	AIProvider      string
-	AIAPIKey        string
-	AIModel         string
+	// 每个功能的独立模式
+	ExtractCodeMode     ProcessorMode
+	DetectAdMode        ProcessorMode
+	SummarizeMode       ProcessorMode
+	JudgeImportanceMode ProcessorMode
+	AIProvider          string
+	AIAPIKey            string
+	AIModel             string
 }
 
 // EmailContent represents the content to be processed
@@ -85,11 +90,15 @@ func (p *Processor) GetProcessingConfig(userID uint) (*ProcessingConfig, error) 
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			// Return default config if no settings found
 			return &ProcessingConfig{
-				Mode:            ProcessorModeLocal,
-				ExtractCode:     true,
-				DetectAd:        true,
-				Summarize:       false,
-				JudgeImportance: true,
+				Mode:                ProcessorModeLocal,
+				ExtractCode:         true,
+				DetectAd:            true,
+				Summarize:           false,
+				JudgeImportance:     true,
+				ExtractCodeMode:     ProcessorModeLocal,
+				DetectAdMode:        ProcessorModeLocal,
+				SummarizeMode:       ProcessorModeLocal,
+				JudgeImportanceMode: ProcessorModeLocal,
 			}, nil
 		}
 		return nil, err
@@ -100,19 +109,33 @@ func (p *Processor) GetProcessingConfig(userID uint) (*ProcessingConfig, error) 
 		DetectAd:        settings.DetectAd,
 		Summarize:       settings.Summarize,
 		JudgeImportance: settings.JudgeImportance,
+		AIProvider:      settings.AIProvider,
+		AIAPIKey:        settings.AIAPIKey,
+		AIModel:         settings.AIModel,
 	}
 
-	// Determine processing mode based on AI settings
+	// 解析每个功能的处理模式
+	config.ExtractCodeMode = parseProcessorMode(settings.ExtractCodeMode)
+	config.DetectAdMode = parseProcessorMode(settings.DetectAdMode)
+	config.SummarizeMode = parseProcessorMode(settings.SummarizeMode)
+	config.JudgeImportanceMode = parseProcessorMode(settings.JudgeImportanceMode)
+
+	// Determine global processing mode based on AI settings
 	if settings.AIEnabled && settings.AIAPIKey != "" {
 		config.Mode = ProcessorModeAI
-		config.AIProvider = settings.AIProvider
-		config.AIAPIKey = settings.AIAPIKey
-		config.AIModel = settings.AIModel
 	} else {
 		config.Mode = ProcessorModeLocal
 	}
 
 	return config, nil
+}
+
+// parseProcessorMode converts string to ProcessorMode
+func parseProcessorMode(mode string) ProcessorMode {
+	if mode == "ai" {
+		return ProcessorModeAI
+	}
+	return ProcessorModeLocal
 }
 
 // ProcessEmail processes an email based on user configuration
@@ -130,16 +153,70 @@ func (p *Processor) ProcessEmailWithConfig(config *ProcessingConfig, content Ema
 	result := &ProcessingResult{
 		ProcessedAt: time.Now(),
 		Importance:  string(models.ImportanceMedium), // Default importance
+		ProcessedBy: string(ProcessorModeLocal),      // Default
 	}
 
-	// Determine which processor to use
-	if config.Mode == ProcessorModeAI {
-		result.ProcessedBy = string(ProcessorModeAI)
-		return p.processWithAI(config, content, result)
+	// Get combined content for processing
+	textContent := content.Body
+	if textContent == "" {
+		textContent = content.HTMLBody
 	}
 
-	result.ProcessedBy = string(ProcessorModeLocal)
-	return p.processWithLocal(config, content, result)
+	// Configure AI client if needed
+	if config.AIAPIKey != "" {
+		p.aiClient.Configure(config.AIProvider, config.AIAPIKey, config.AIModel)
+	}
+
+	// Extract verification code
+	if config.ExtractCode {
+		if config.ExtractCodeMode == ProcessorModeAI && config.AIAPIKey != "" {
+			code, err := p.aiClient.ExtractVerificationCode(textContent)
+			if err == nil {
+				result.VerificationCode = code
+				result.ProcessedBy = string(ProcessorModeAI)
+			}
+		} else {
+			result.VerificationCode = local.ExtractVerificationCode(textContent)
+		}
+	}
+
+	// Detect advertisement
+	if config.DetectAd {
+		if config.DetectAdMode == ProcessorModeAI && config.AIAPIKey != "" {
+			isAd, err := p.aiClient.DetectAd(content.Subject, textContent)
+			if err == nil {
+				result.IsAd = isAd
+			}
+		} else {
+			result.IsAd = local.DetectAd(content.Subject, textContent)
+		}
+	}
+
+	// Summarize content
+	if config.Summarize {
+		if config.SummarizeMode == ProcessorModeAI && config.AIAPIKey != "" {
+			summary, err := p.aiClient.Summarize(textContent)
+			if err == nil {
+				result.Summary = summary
+			}
+		} else {
+			result.Summary = local.Summarize(textContent)
+		}
+	}
+
+	// Judge importance
+	if config.JudgeImportance {
+		if config.JudgeImportanceMode == ProcessorModeAI && config.AIAPIKey != "" {
+			importance, err := p.aiClient.JudgeImportance(content.Subject, textContent, content.From)
+			if err == nil {
+				result.Importance = importance
+			}
+		} else {
+			result.Importance = local.JudgeImportance(content.Subject, textContent, content.From)
+		}
+	}
+
+	return result, nil
 }
 
 // processWithAI processes email using AI
