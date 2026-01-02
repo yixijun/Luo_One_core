@@ -2574,27 +2574,63 @@ func (s *EmailService) ProcessAccountEmails(userID, accountID uint) (int, error)
 		return 0, err
 	}
 
+	totalEmails := len(emails)
 	s.logService.LogInfo(userID, models.LogModuleEmail, "process_account", "Starting batch processing (reprocess all)", map[string]interface{}{
 		"account_id":  accountID,
-		"email_count": len(emails),
+		"email_count": totalEmails,
 	})
 
-	processedCount := 0
-	for _, email := range emails {
-		emailCopy := email // Create a copy for the goroutine
-		if _, err := s.processor.ProcessAndSaveEmail(userID, accountID, &emailCopy); err != nil {
-			s.logService.LogWarn(userID, models.LogModuleEmail, "process_email", "Failed to process email", map[string]interface{}{
-				"email_id": email.ID,
-				"error":    err.Error(),
-			})
-			continue
+	// Use worker pool for concurrent processing
+	const workerCount = 10 // Number of concurrent workers
+	emailChan := make(chan models.Email, totalEmails)
+	resultChan := make(chan bool, totalEmails)
+
+	// Start workers
+	var wg sync.WaitGroup
+	for i := 0; i < workerCount; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for email := range emailChan {
+				emailCopy := email
+				if _, err := s.processor.ProcessAndSaveEmail(userID, accountID, &emailCopy); err != nil {
+					s.logService.LogWarn(userID, models.LogModuleEmail, "process_email", "Failed to process email", map[string]interface{}{
+						"email_id": email.ID,
+						"error":    err.Error(),
+					})
+					resultChan <- false
+				} else {
+					resultChan <- true
+				}
+			}
+		}()
+	}
+
+	// Send emails to workers
+	go func() {
+		for _, email := range emails {
+			emailChan <- email
 		}
-		processedCount++
+		close(emailChan)
+	}()
+
+	// Wait for all workers to finish
+	go func() {
+		wg.Wait()
+		close(resultChan)
+	}()
+
+	// Count results
+	processedCount := 0
+	for success := range resultChan {
+		if success {
+			processedCount++
+		}
 	}
 
 	s.logService.LogInfo(userID, models.LogModuleEmail, "process_account", "Batch processing completed", map[string]interface{}{
 		"account_id":      accountID,
-		"total_emails":    len(emails),
+		"total_emails":    totalEmails,
 		"processed_count": processedCount,
 	})
 
