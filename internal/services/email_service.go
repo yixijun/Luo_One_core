@@ -2096,7 +2096,10 @@ func (s *EmailService) sendViaSMTP(account *models.EmailAccount, password string
 			return fmt.Errorf("close failed: %v", err)
 		}
 
-		return client.Quit()
+		// 邮件已发送成功，忽略 Quit 的错误
+		// 某些 SMTP 服务器在关闭连接时可能返回异常响应
+		client.Quit()
+		return nil
 	}
 
 	// Non-SSL connection with optional STARTTLS
@@ -2164,7 +2167,9 @@ func (s *EmailService) sendViaSMTP(account *models.EmailAccount, password string
 		return fmt.Errorf("close failed: %v", err)
 	}
 
-	return client.Quit()
+	// 邮件已发送成功，忽略 Quit 的错误
+	client.Quit()
+	return nil
 }
 
 // generateMessageID generates a unique message ID
