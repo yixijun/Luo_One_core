@@ -179,7 +179,7 @@ func (p *Processor) ProcessEmailWithConfig(config *ProcessingConfig, content Ema
 		p.aiClient.ConfigureWithBaseURL(config.AIProvider, config.AIAPIKey, config.AIModel, config.AIBaseURL)
 	}
 
-	// Extract verification code
+	// Extract verification code (both AI and local modes)
 	if config.ExtractCode {
 		if config.ExtractCodeMode == ProcessorModeAI && config.AIAPIKey != "" {
 			code, err := p.aiClient.ExtractVerificationCodeWithPrompt(textContent, config.PromptExtractCode)
@@ -192,40 +192,37 @@ func (p *Processor) ProcessEmailWithConfig(config *ProcessingConfig, content Ema
 		}
 	}
 
-	// Detect advertisement
+	// Detect advertisement (AI mode only - local mode skipped)
 	if config.DetectAd {
 		if config.DetectAdMode == ProcessorModeAI && config.AIAPIKey != "" {
 			isAd, err := p.aiClient.DetectAdWithPrompt(content.Subject, textContent, config.PromptDetectAd)
 			if err == nil {
 				result.IsAd = isAd
 			}
-		} else {
-			result.IsAd = local.DetectAd(content.Subject, textContent)
 		}
+		// Local mode: skip ad detection, keep default false
 	}
 
-	// Summarize content
+	// Summarize content (AI mode only - local mode skipped)
 	if config.Summarize {
 		if config.SummarizeMode == ProcessorModeAI && config.AIAPIKey != "" {
 			summary, err := p.aiClient.SummarizeWithPrompt(textContent, config.PromptSummarize)
 			if err == nil {
 				result.Summary = summary
 			}
-		} else {
-			result.Summary = local.Summarize(textContent)
 		}
+		// Local mode: skip summarization
 	}
 
-	// Judge importance
+	// Judge importance (AI mode only - local mode skipped)
 	if config.JudgeImportance {
 		if config.JudgeImportanceMode == ProcessorModeAI && config.AIAPIKey != "" {
 			importance, err := p.aiClient.JudgeImportanceWithPrompt(content.Subject, textContent, content.From, config.PromptJudgeImportance)
 			if err == nil {
 				result.Importance = importance
 			}
-		} else {
-			result.Importance = local.JudgeImportance(content.Subject, textContent, content.From)
 		}
+		// Local mode: skip importance judgment, keep default "medium"
 	}
 
 	return result, nil
@@ -278,6 +275,7 @@ func (p *Processor) processWithAI(config *ProcessingConfig, content EmailContent
 }
 
 // processWithLocal processes email using local methods
+// Only extracts verification code, skips ad detection, summarization, and importance judgment
 func (p *Processor) processWithLocal(config *ProcessingConfig, content EmailContent, result *ProcessingResult) (*ProcessingResult, error) {
 	// Get combined content for processing
 	textContent := content.Body
@@ -285,25 +283,13 @@ func (p *Processor) processWithLocal(config *ProcessingConfig, content EmailCont
 		textContent = content.HTMLBody
 	}
 
-	// Extract verification code
+	// Extract verification code (only local function that runs)
 	if config.ExtractCode {
 		result.VerificationCode = local.ExtractVerificationCode(textContent)
 	}
 
-	// Detect advertisement
-	if config.DetectAd {
-		result.IsAd = local.DetectAd(content.Subject, textContent)
-	}
-
-	// Summarize content (local summarization is limited)
-	if config.Summarize {
-		result.Summary = local.Summarize(textContent)
-	}
-
-	// Judge importance
-	if config.JudgeImportance {
-		result.Importance = local.JudgeImportance(content.Subject, textContent, content.From)
-	}
+	// Ad detection, summarization, and importance judgment are skipped in local mode
+	// They will only run when AI mode is enabled for those specific functions
 
 	return result, nil
 }
