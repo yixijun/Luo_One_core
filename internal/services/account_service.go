@@ -6,7 +6,10 @@ import (
 	"crypto/rand"
 	"encoding/base64"
 	"errors"
+	"fmt"
 	"io"
+	"os"
+	"path/filepath"
 
 	"github.com/luo-one/core/internal/database/models"
 	"gorm.io/gorm"
@@ -287,7 +290,7 @@ func (s *AccountService) UpdateAccount(id, userID uint, input UpdateAccountInput
 	return account, nil
 }
 
-// DeleteAccount deletes an email account
+// DeleteAccount deletes an email account and all associated data
 func (s *AccountService) DeleteAccount(id, userID uint) error {
 	account, err := s.GetAccountByIDAndUserID(id, userID)
 	if err != nil {
@@ -296,8 +299,64 @@ func (s *AccountService) DeleteAccount(id, userID uint) error {
 
 	email := account.Email
 
-	if err := s.db.Delete(account).Error; err != nil {
+	// 开启事务
+	tx := s.db.Begin()
+	if tx.Error != nil {
+		return tx.Error
+	}
+
+	// 1. 获取关联的邮件ID列表（用于删除附件目录）
+	var emailIDs []uint
+	if err := tx.Model(&models.Email{}).Where("account_id = ?", id).Pluck("id", &emailIDs).Error; err != nil {
+		tx.Rollback()
 		return err
+	}
+	
+	// 2. 删除关联的处理结果
+	if len(emailIDs) > 0 {
+		if err := tx.Where("email_id IN ?", emailIDs).Delete(&models.ProcessedResult{}).Error; err != nil {
+			tx.Rollback()
+			return err
+		}
+	}
+
+	// 3. 删除关联的邮件
+	if err := tx.Where("account_id = ?", id).Delete(&models.Email{}).Error; err != nil {
+		tx.Rollback()
+		return err
+	}
+
+	// 4. 删除账户记录
+	if err := tx.Delete(account).Error; err != nil {
+		tx.Rollback()
+		return err
+	}
+
+	// 提交事务
+	if err := tx.Commit().Error; err != nil {
+		return err
+	}
+
+	// 5. 删除文件系统中的账户数据目录
+	// 目录结构: data/users/{userID}/raw_emails/{accountID}
+	//          data/users/{userID}/processed_emails/{accountID}
+	//          data/users/{userID}/attachments/{emailID} (每个邮件的附件)
+	baseDir := "data/users"
+	userDir := filepath.Join(baseDir, fmt.Sprintf("%d", userID))
+	
+	// 删除原始邮件目录
+	rawEmailsDir := filepath.Join(userDir, "raw_emails", fmt.Sprintf("%d", id))
+	os.RemoveAll(rawEmailsDir)
+	
+	// 删除处理结果目录
+	processedDir := filepath.Join(userDir, "processed_emails", fmt.Sprintf("%d", id))
+	os.RemoveAll(processedDir)
+	
+	// 删除每个邮件的附件目录
+	attachmentsBaseDir := filepath.Join(userDir, "attachments")
+	for _, emailID := range emailIDs {
+		attachDir := filepath.Join(attachmentsBaseDir, fmt.Sprintf("%d", emailID))
+		os.RemoveAll(attachDir)
 	}
 
 	// Log the account deletion
