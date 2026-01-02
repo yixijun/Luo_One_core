@@ -649,6 +649,7 @@ func (s *EmailService) FetchNewEmailsWithOptions(userID, accountID uint, days in
 	// 并发获取 body
 	bodyChunkSize := (len(uidsToFetch) + numWorkers - 1) / numWorkers
 	bodyResultChan := make(chan map[uint32][]byte, numWorkers)
+	errorChan := make(chan error, numWorkers)
 	var bodyWg sync.WaitGroup
 
 	s.logService.LogInfo(userID, models.LogModuleEmail, "fetch", "Phase 3: Fetching bodies", map[string]interface{}{
@@ -667,13 +668,14 @@ func (s *EmailService) FetchNewEmailsWithOptions(userID, accountID uint, days in
 		chunk := uidsToFetch[start:end]
 
 		bodyWg.Add(1)
-		go func(uids []uint32) {
+		go func(workerID int, uids []uint32) {
 			defer bodyWg.Done()
 
 			results := make(map[uint32][]byte)
 
 			workerClient, err := s.connectIMAP(account)
 			if err != nil {
+				errorChan <- fmt.Errorf("worker %d: IMAP connect failed: %v", workerID, err)
 				bodyResultChan <- results
 				return
 			}
@@ -681,6 +683,7 @@ func (s *EmailService) FetchNewEmailsWithOptions(userID, accountID uint, days in
 
 			_, err = workerClient.Select("INBOX", false)
 			if err != nil {
+				errorChan <- fmt.Errorf("worker %d: Select INBOX failed: %v", workerID, err)
 				bodyResultChan <- results
 				return
 			}
@@ -716,16 +719,28 @@ func (s *EmailService) FetchNewEmailsWithOptions(userID, accountID uint, days in
 						}
 					}
 				}
-				<-done
+				fetchErr := <-done
+				if fetchErr != nil {
+					errorChan <- fmt.Errorf("worker %d: UidFetch failed: %v", workerID, fetchErr)
+				}
 			}
 
 			bodyResultChan <- results
-		}(chunk)
+		}(workerIdx, chunk)
 	}
 
 	go func() {
 		bodyWg.Wait()
 		close(bodyResultChan)
+		close(errorChan)
+	}()
+
+	// Collect errors
+	var fetchErrors []string
+	go func() {
+		for err := range errorChan {
+			fetchErrors = append(fetchErrors, err.Error())
+		}
 	}()
 
 	uidToBody := make(map[uint32][]byte)
@@ -737,11 +752,13 @@ func (s *EmailService) FetchNewEmailsWithOptions(userID, accountID uint, days in
 
 	s.logService.LogInfo(userID, models.LogModuleEmail, "fetch", "Phase 3 completed", map[string]interface{}{
 		"bodies_fetched": len(uidToBody),
+		"errors":         fetchErrors,
 	})
 
 	// 第四步：构建最终邮件列表
 	var fetchedEmails []FetchedEmail
 	var parseErrors int
+	var bodyMissing int
 
 	for _, info := range newMsgInfos {
 		email := FetchedEmail{
@@ -782,6 +799,9 @@ func (s *EmailService) FetchNewEmailsWithOptions(userID, accountID uint, days in
 			} else {
 				s.parseMessageEntity(entity, &email)
 			}
+		} else {
+			// Body not fetched, log warning
+			bodyMissing++
 		}
 
 		fetchedEmails = append(fetchedEmails, email)
@@ -791,6 +811,8 @@ func (s *EmailService) FetchNewEmailsWithOptions(userID, accountID uint, days in
 		"account_id":    accountID,
 		"fetched_count": len(fetchedEmails),
 		"parse_errors":  parseErrors,
+		"body_missing":  bodyMissing,
+		"bodies_in_map": len(uidToBody),
 	})
 
 	return fetchedEmails, nil
