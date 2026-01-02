@@ -2739,3 +2739,37 @@ func (s *EmailService) UpdateEmailImportance(userID, emailID uint, importance st
 
 	return nil
 }
+
+// UpdateEmailAdType updates the ad type of an email's processed result
+func (s *EmailService) UpdateEmailAdType(userID, emailID uint, isAd bool) error {
+	// Get the email
+	var email models.Email
+	if err := s.db.First(&email, emailID).Error; err != nil {
+		return ErrEmailNotFound
+	}
+
+	// Verify user owns the email's account
+	_, err := s.accountService.GetAccountByIDAndUserID(email.AccountID, userID)
+	if err != nil {
+		return ErrEmailNotFound
+	}
+
+	// Update the processed result's is_ad
+	result := s.db.Model(&models.ProcessedResult{}).Where("email_id = ?", emailID).Update("is_ad", isAd)
+	if result.Error != nil {
+		return result.Error
+	}
+
+	// If no processed result exists, create one
+	if result.RowsAffected == 0 {
+		processedResult := &models.ProcessedResult{
+			EmailID: emailID,
+			IsAd:    isAd,
+		}
+		if err := s.db.Create(processedResult).Error; err != nil {
+			return err
+		}
+	}
+
+	return nil
+}

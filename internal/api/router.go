@@ -120,6 +120,7 @@ func SetupRouter(db *gorm.DB, cfg *config.Config) (*gin.Engine, *middleware.Auth
 				emails.DELETE("/:id", emailHandler.DeleteEmail)
 				emails.PUT("/:id/read", emailHandler.MarkAsRead)
 				emails.PUT("/:id/importance", emailHandler.UpdateImportance) // 更新重要度
+				emails.PUT("/:id/ad-type", emailHandler.UpdateAdType) // 更新广告类型
 				emails.POST("/send", emailHandler.SendEmail)
 				emails.POST("/sync", emailHandler.SyncEmails)
 				emails.GET("/sync/progress", emailHandler.GetSyncProgress) // 获取全量同步进度

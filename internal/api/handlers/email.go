@@ -1156,6 +1156,11 @@ type UpdateImportanceRequest struct {
 	Importance string `json:"importance" binding:"required"`
 }
 
+// UpdateAdTypeRequest represents the request to update email ad type
+type UpdateAdTypeRequest struct {
+	IsAd bool `json:"is_ad"`
+}
+
 // UpdateImportance updates the importance of an email's processed result
 // PUT /api/emails/:id/importance
 func (h *EmailHandler) UpdateImportance(c *gin.Context) {
@@ -1233,5 +1238,72 @@ func (h *EmailHandler) UpdateImportance(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{
 		"success": true,
 		"message": "Importance updated successfully",
+	})
+}
+
+// UpdateAdType updates the ad type of an email's processed result
+// PUT /api/emails/:id/ad-type
+func (h *EmailHandler) UpdateAdType(c *gin.Context) {
+	userID, exists := middleware.GetUserIDFromContext(c)
+	if !exists {
+		c.JSON(http.StatusUnauthorized, gin.H{
+			"success": false,
+			"error": gin.H{
+				"code":    "AUTH_FAILED",
+				"message": "User not authenticated",
+			},
+		})
+		return
+	}
+
+	emailID, err := strconv.ParseUint(c.Param("id"), 10, 32)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"success": false,
+			"error": gin.H{
+				"code":    "VALIDATION_ERROR",
+				"message": "Invalid email ID",
+			},
+		})
+		return
+	}
+
+	var req UpdateAdTypeRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"success": false,
+			"error": gin.H{
+				"code":    "VALIDATION_ERROR",
+				"message": "Invalid request body",
+			},
+		})
+		return
+	}
+
+	err = h.emailService.UpdateEmailAdType(userID, uint(emailID), req.IsAd)
+	if err != nil {
+		if err == services.ErrEmailNotFound {
+			c.JSON(http.StatusNotFound, gin.H{
+				"success": false,
+				"error": gin.H{
+					"code":    "NOT_FOUND",
+					"message": "Email not found",
+				},
+			})
+			return
+		}
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"success": false,
+			"error": gin.H{
+				"code":    "INTERNAL_ERROR",
+				"message": "Failed to update ad type: " + err.Error(),
+			},
+		})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"success": true,
+		"message": "Ad type updated successfully",
 	})
 }
