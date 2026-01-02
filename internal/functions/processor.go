@@ -44,7 +44,13 @@ type ProcessingConfig struct {
 	JudgeImportanceMode ProcessorMode
 	AIProvider          string
 	AIAPIKey            string
+	AIBaseURL           string
 	AIModel             string
+	// 自定义提示词
+	PromptExtractCode     string
+	PromptDetectAd        string
+	PromptSummarize       string
+	PromptJudgeImportance string
 }
 
 // EmailContent represents the content to be processed
@@ -111,7 +117,13 @@ func (p *Processor) GetProcessingConfig(userID uint) (*ProcessingConfig, error) 
 		JudgeImportance: settings.JudgeImportance,
 		AIProvider:      settings.AIProvider,
 		AIAPIKey:        settings.AIAPIKey,
+		AIBaseURL:       settings.AIBaseURL,
 		AIModel:         settings.AIModel,
+		// 自定义提示词
+		PromptExtractCode:     settings.PromptExtractCode,
+		PromptDetectAd:        settings.PromptDetectAd,
+		PromptSummarize:       settings.PromptSummarize,
+		PromptJudgeImportance: settings.PromptJudgeImportance,
 	}
 
 	// 解析每个功能的处理模式
@@ -164,13 +176,13 @@ func (p *Processor) ProcessEmailWithConfig(config *ProcessingConfig, content Ema
 
 	// Configure AI client if needed
 	if config.AIAPIKey != "" {
-		p.aiClient.Configure(config.AIProvider, config.AIAPIKey, config.AIModel)
+		p.aiClient.ConfigureWithBaseURL(config.AIProvider, config.AIAPIKey, config.AIModel, config.AIBaseURL)
 	}
 
 	// Extract verification code
 	if config.ExtractCode {
 		if config.ExtractCodeMode == ProcessorModeAI && config.AIAPIKey != "" {
-			code, err := p.aiClient.ExtractVerificationCode(textContent)
+			code, err := p.aiClient.ExtractVerificationCodeWithPrompt(textContent, config.PromptExtractCode)
 			if err == nil {
 				result.VerificationCode = code
 				result.ProcessedBy = string(ProcessorModeAI)
@@ -183,7 +195,7 @@ func (p *Processor) ProcessEmailWithConfig(config *ProcessingConfig, content Ema
 	// Detect advertisement
 	if config.DetectAd {
 		if config.DetectAdMode == ProcessorModeAI && config.AIAPIKey != "" {
-			isAd, err := p.aiClient.DetectAd(content.Subject, textContent)
+			isAd, err := p.aiClient.DetectAdWithPrompt(content.Subject, textContent, config.PromptDetectAd)
 			if err == nil {
 				result.IsAd = isAd
 			}
@@ -195,7 +207,7 @@ func (p *Processor) ProcessEmailWithConfig(config *ProcessingConfig, content Ema
 	// Summarize content
 	if config.Summarize {
 		if config.SummarizeMode == ProcessorModeAI && config.AIAPIKey != "" {
-			summary, err := p.aiClient.Summarize(textContent)
+			summary, err := p.aiClient.SummarizeWithPrompt(textContent, config.PromptSummarize)
 			if err == nil {
 				result.Summary = summary
 			}
@@ -207,7 +219,7 @@ func (p *Processor) ProcessEmailWithConfig(config *ProcessingConfig, content Ema
 	// Judge importance
 	if config.JudgeImportance {
 		if config.JudgeImportanceMode == ProcessorModeAI && config.AIAPIKey != "" {
-			importance, err := p.aiClient.JudgeImportance(content.Subject, textContent, content.From)
+			importance, err := p.aiClient.JudgeImportanceWithPrompt(content.Subject, textContent, content.From, config.PromptJudgeImportance)
 			if err == nil {
 				result.Importance = importance
 			}

@@ -57,31 +57,41 @@ func NewClient() *Client {
 
 // Configure configures the AI client with provider settings
 func (c *Client) Configure(provider, apiKey, model string) {
+	c.ConfigureWithBaseURL(provider, apiKey, model, "")
+}
+
+// ConfigureWithBaseURL configures the AI client with provider settings and custom base URL
+func (c *Client) ConfigureWithBaseURL(provider, apiKey, model, baseURL string) {
 	c.provider = Provider(strings.ToLower(provider))
 	c.apiKey = apiKey
 	c.model = model
 	c.configured = apiKey != ""
 
-	// Set default base URLs based on provider
-	switch c.provider {
-	case ProviderOpenAI:
-		c.baseURL = "https://api.openai.com/v1"
-		if c.model == "" {
-			c.model = "gpt-3.5-turbo"
+	// Use custom base URL if provided
+	if baseURL != "" {
+		c.baseURL = strings.TrimSuffix(baseURL, "/")
+	} else {
+		// Set default base URLs based on provider
+		switch c.provider {
+		case ProviderOpenAI:
+			c.baseURL = "https://api.openai.com/v1"
+			if c.model == "" {
+				c.model = "gpt-3.5-turbo"
+			}
+		case ProviderClaude:
+			c.baseURL = "https://api.anthropic.com/v1"
+			if c.model == "" {
+				c.model = "claude-3-haiku-20240307"
+			}
+		case ProviderAzure:
+			// Azure requires custom endpoint
+			if c.model == "" {
+				c.model = "gpt-35-turbo"
+			}
+		default:
+			c.provider = ProviderOpenAI
+			c.baseURL = "https://api.openai.com/v1"
 		}
-	case ProviderClaude:
-		c.baseURL = "https://api.anthropic.com/v1"
-		if c.model == "" {
-			c.model = "claude-3-haiku-20240307"
-		}
-	case ProviderAzure:
-		// Azure requires custom endpoint
-		if c.model == "" {
-			c.model = "gpt-35-turbo"
-		}
-	default:
-		c.provider = ProviderOpenAI
-		c.baseURL = "https://api.openai.com/v1"
 	}
 }
 
@@ -190,6 +200,11 @@ func (c *Client) sendChatRequest(messages []ChatMessage) (string, error) {
 
 // ExtractVerificationCode uses AI to extract verification codes from email content
 func (c *Client) ExtractVerificationCode(content string) (string, error) {
+	return c.ExtractVerificationCodeWithPrompt(content, "")
+}
+
+// ExtractVerificationCodeWithPrompt uses AI to extract verification codes with custom prompt
+func (c *Client) ExtractVerificationCodeWithPrompt(content, customPrompt string) (string, error) {
 	if content == "" {
 		return "", nil
 	}
@@ -199,16 +214,21 @@ func (c *Client) ExtractVerificationCode(content string) (string, error) {
 		content = content[:2000]
 	}
 
-	messages := []ChatMessage{
-		{
-			Role: "system",
-			Content: `You are a verification code extractor. Extract the verification code from the email content.
+	systemPrompt := customPrompt
+	if systemPrompt == "" {
+		systemPrompt = `You are a verification code extractor. Extract the verification code from the email content.
 Rules:
 - Only extract codes that are 4-8 characters long
 - Codes can be numeric (e.g., 123456) or alphanumeric (e.g., ABC123)
 - Return ONLY the code, nothing else
 - If no verification code is found, return "NONE"
-- Do not include any explanation or additional text`,
+- Do not include any explanation or additional text`
+	}
+
+	messages := []ChatMessage{
+		{
+			Role:    "system",
+			Content: systemPrompt,
 		},
 		{
 			Role:    "user",
@@ -236,20 +256,30 @@ Rules:
 
 // DetectAd uses AI to determine if an email is an advertisement
 func (c *Client) DetectAd(subject, content string) (bool, error) {
+	return c.DetectAdWithPrompt(subject, content, "")
+}
+
+// DetectAdWithPrompt uses AI to determine if an email is an advertisement with custom prompt
+func (c *Client) DetectAdWithPrompt(subject, content, customPrompt string) (bool, error) {
 	// Truncate content if too long
 	if len(content) > 1500 {
 		content = content[:1500]
 	}
 
-	messages := []ChatMessage{
-		{
-			Role: "system",
-			Content: `You are an email classifier. Determine if the email is an advertisement or promotional content.
+	systemPrompt := customPrompt
+	if systemPrompt == "" {
+		systemPrompt = `You are an email classifier. Determine if the email is an advertisement or promotional content.
 Rules:
 - Respond with only "YES" if it's an advertisement/promotional email
 - Respond with only "NO" if it's not an advertisement
 - Consider: promotional offers, sales, marketing campaigns, newsletters as advertisements
-- Personal emails, transactional emails, and important notifications are NOT advertisements`,
+- Personal emails, transactional emails, and important notifications are NOT advertisements`
+	}
+
+	messages := []ChatMessage{
+		{
+			Role:    "system",
+			Content: systemPrompt,
 		},
 		{
 			Role:    "user",
@@ -268,6 +298,11 @@ Rules:
 
 // Summarize uses AI to create a summary of the email content
 func (c *Client) Summarize(content string) (string, error) {
+	return c.SummarizeWithPrompt(content, "")
+}
+
+// SummarizeWithPrompt uses AI to create a summary with custom prompt
+func (c *Client) SummarizeWithPrompt(content, customPrompt string) (string, error) {
 	if content == "" {
 		return "", nil
 	}
@@ -277,15 +312,20 @@ func (c *Client) Summarize(content string) (string, error) {
 		content = content[:3000]
 	}
 
-	messages := []ChatMessage{
-		{
-			Role: "system",
-			Content: `You are an email summarizer. Create a brief, concise summary of the email content.
+	systemPrompt := customPrompt
+	if systemPrompt == "" {
+		systemPrompt = `You are an email summarizer. Create a brief, concise summary of the email content.
 Rules:
 - Keep the summary under 200 characters
 - Focus on the main point or action required
 - Use the same language as the original email
-- Be direct and informative`,
+- Be direct and informative`
+	}
+
+	messages := []ChatMessage{
+		{
+			Role:    "system",
+			Content: systemPrompt,
 		},
 		{
 			Role:    "user",
@@ -303,21 +343,31 @@ Rules:
 
 // JudgeImportance uses AI to determine the importance level of an email
 func (c *Client) JudgeImportance(subject, content, from string) (string, error) {
+	return c.JudgeImportanceWithPrompt(subject, content, from, "")
+}
+
+// JudgeImportanceWithPrompt uses AI to determine importance with custom prompt
+func (c *Client) JudgeImportanceWithPrompt(subject, content, from, customPrompt string) (string, error) {
 	// Truncate content if too long
 	if len(content) > 1500 {
 		content = content[:1500]
 	}
 
-	messages := []ChatMessage{
-		{
-			Role: "system",
-			Content: `You are an email importance classifier. Determine the importance level of the email.
+	systemPrompt := customPrompt
+	if systemPrompt == "" {
+		systemPrompt = `You are an email importance classifier. Determine the importance level of the email.
 Rules:
 - Respond with ONLY one of: "critical", "high", "medium", "low"
 - critical: Urgent matters, security alerts, payment issues, legal notices
 - high: Important business matters, interviews, contracts, deadlines
 - medium: Regular correspondence, updates, general information
-- low: Newsletters, promotions, automated notifications, spam-like content`,
+- low: Newsletters, promotions, automated notifications, spam-like content`
+	}
+
+	messages := []ChatMessage{
+		{
+			Role:    "system",
+			Content: systemPrompt,
 		},
 		{
 			Role:    "user",

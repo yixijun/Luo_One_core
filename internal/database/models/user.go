@@ -26,6 +26,7 @@ type UserSettings struct {
 	AIEnabled       bool   `gorm:"default:false" json:"ai_enabled"`
 	AIProvider      string `gorm:"size:50" json:"ai_provider"`
 	AIAPIKey        string `gorm:"size:500" json:"ai_api_key"`
+	AIBaseURL       string `gorm:"size:500" json:"ai_base_url"` // AI API 地址
 	AIModel         string `gorm:"size:100" json:"ai_model"`
 	ExtractCode     bool   `gorm:"default:true" json:"extract_code"`
 	DetectAd        bool   `gorm:"default:true" json:"detect_ad"`
@@ -37,6 +38,12 @@ type UserSettings struct {
 	DetectAdMode        string `gorm:"size:20;default:'local'" json:"detect_ad_mode"`
 	SummarizeMode       string `gorm:"size:20;default:'local'" json:"summarize_mode"`
 	JudgeImportanceMode string `gorm:"size:20;default:'local'" json:"judge_importance_mode"`
+
+	// AI 提示词配置
+	PromptExtractCode     string `gorm:"type:text" json:"prompt_extract_code"`
+	PromptDetectAd        string `gorm:"type:text" json:"prompt_detect_ad"`
+	PromptSummarize       string `gorm:"type:text" json:"prompt_summarize"`
+	PromptJudgeImportance string `gorm:"type:text" json:"prompt_judge_importance"`
 
 	// Google OAuth 配置
 	GoogleClientID     string `gorm:"size:500" json:"google_client_id"`
