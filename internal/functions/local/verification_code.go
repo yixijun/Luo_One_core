@@ -6,19 +6,37 @@ import (
 	"strings"
 )
 
-// Common verification code patterns
+// Common verification code patterns - ordered by specificity (most specific first)
 var verificationCodePatterns = []*regexp.Regexp{
-	// Chinese patterns for verification codes
-	regexp.MustCompile(`(?i)(?:验证码|校验码|确认码|动态码|安全码|授权码)[：:\s]*([A-Za-z0-9]{4,8})`),
-	regexp.MustCompile(`(?i)(?:verification\s*code|code|pin|otp)[：:\s]*([A-Za-z0-9]{4,8})`),
+	// Chinese patterns for verification codes (highest priority)
+	regexp.MustCompile(`(?i)(?:验证码|校验码|确认码|动态码|安全码|授权码|登录码|登陆码)[：:\s]*([A-Za-z0-9]{4,8})`),
+	// Pattern: code in brackets with Chinese keyword
+	regexp.MustCompile(`(?i)(?:验证码|校验码|确认码)[：:\s]*[\[【\(]([A-Za-z0-9]{4,8})[\]】\)]`),
+	// English verification code patterns
+	regexp.MustCompile(`(?i)(?:verification\s*code|security\s*code|confirmation\s*code)[：:\s]*([A-Za-z0-9]{4,8})`),
 	// Pattern: "Your code is: 123456"
-	regexp.MustCompile(`(?i)(?:your\s+)?(?:code|pin|otp)\s+(?:is|:)\s*([A-Za-z0-9]{4,8})`),
+	regexp.MustCompile(`(?i)(?:your\s+)?(?:verification\s+)?(?:code|pin|otp)\s+(?:is|:)\s*([A-Za-z0-9]{4,8})`),
 	// Pattern: "123456 is your verification code"
 	regexp.MustCompile(`(?i)([A-Za-z0-9]{4,8})\s+(?:is\s+)?(?:your\s+)?(?:verification\s*)?(?:code|pin|otp)`),
-	// Pattern: code in brackets or parentheses
-	regexp.MustCompile(`(?i)(?:验证码|code|pin|otp)[：:\s]*[\[【\(]([A-Za-z0-9]{4,8})[\]】\)]`),
-	// Pattern: standalone 4-8 digit numbers that look like codes
-	regexp.MustCompile(`(?:^|\s)(\d{4,8})(?:\s|$|[。，,.])`),
+	// Pattern: code in brackets with English keyword
+	regexp.MustCompile(`(?i)(?:code|pin|otp)[：:\s]*[\[【\(]([A-Za-z0-9]{4,8})[\]】\)]`),
+}
+
+// Keywords that indicate an email contains a verification code
+var verificationKeywords = []string{
+	"验证码", "校验码", "确认码", "动态码", "安全码", "授权码", "登录码", "登陆码",
+	"verification code", "security code", "confirmation code", "login code",
+	"one-time password", "one time password", "otp", "2fa", "two-factor",
+	"verify your", "confirm your", "验证您的", "确认您的",
+}
+
+// Keywords that indicate an email is NOT about verification codes (promotional/marketing)
+var nonVerificationKeywords = []string{
+	"sale", "discount", "offer", "promotion", "promo", "deal", "save",
+	"clearance", "limited time", "special offer", "buy now", "shop now",
+	"unsubscribe", "newsletter", "marketing", "advertisement",
+	"促销", "优惠", "折扣", "特价", "限时", "抢购", "活动", "广告",
+	"年终", "年末", "新年", "圣诞", "黑五", "双十一", "双十二",
 }
 
 // CodeCandidate represents a potential verification code with its confidence score
@@ -37,6 +55,12 @@ func ExtractVerificationCode(content string) string {
 
 	// Normalize content
 	content = normalizeContent(content)
+	lowerContent := strings.ToLower(content)
+
+	// First check if this looks like a verification code email
+	if !looksLikeVerificationEmail(lowerContent) {
+		return ""
+	}
 
 	var candidates []CodeCandidate
 
@@ -75,6 +99,30 @@ func ExtractVerificationCode(content string) string {
 	})
 
 	return candidates[0].Code
+}
+
+// looksLikeVerificationEmail checks if the content appears to be a verification code email
+func looksLikeVerificationEmail(lowerContent string) bool {
+	// Check for non-verification keywords (promotional emails)
+	nonVerificationCount := 0
+	for _, keyword := range nonVerificationKeywords {
+		if strings.Contains(lowerContent, strings.ToLower(keyword)) {
+			nonVerificationCount++
+		}
+	}
+	// If too many promotional keywords, likely not a verification email
+	if nonVerificationCount >= 2 {
+		return false
+	}
+
+	// Check for verification keywords
+	for _, keyword := range verificationKeywords {
+		if strings.Contains(lowerContent, strings.ToLower(keyword)) {
+			return true
+		}
+	}
+
+	return false
 }
 
 // ExtractAllVerificationCodes extracts all potential verification codes from content
@@ -132,10 +180,11 @@ func isValidCode(code string) bool {
 
 	// Must contain at least one digit
 	hasDigit := false
+	digitCount := 0
 	for _, c := range code {
 		if c >= '0' && c <= '9' {
 			hasDigit = true
-			break
+			digitCount++
 		}
 	}
 	if !hasDigit {
@@ -151,9 +200,21 @@ func isValidCode(code string) bool {
 
 	// Exclude common false positives
 	lowerCode := strings.ToLower(code)
-	falsePositives := []string{"http", "https", "www", "html", "text", "mail", "email"}
+	falsePositives := []string{
+		"http", "https", "www", "html", "text", "mail", "email",
+		"2024", "2025", "2026", "2027", "2028", "2029", "2030", // Years
+		"1234", "12345", "123456", "1234567", "12345678", // Sequential numbers
+		"0000", "1111", "2222", "3333", "4444", "5555", "6666", "7777", "8888", "9999", // Repeated digits
+	}
 	for _, fp := range falsePositives {
 		if lowerCode == fp {
+			return false
+		}
+	}
+
+	// If it's a 4-digit number that looks like a year (19xx, 20xx), reject it
+	if len(code) == 4 && digitCount == 4 {
+		if strings.HasPrefix(code, "19") || strings.HasPrefix(code, "20") {
 			return false
 		}
 	}
