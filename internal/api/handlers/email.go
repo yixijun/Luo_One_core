@@ -935,3 +935,79 @@ func (h *EmailHandler) DeleteAttachment(c *gin.Context) {
 		"message": "Attachment deleted successfully",
 	})
 }
+
+// ProcessRequest represents the request to process emails
+type ProcessRequest struct {
+	AccountID uint `json:"account_id" binding:"required"`
+}
+
+// ProcessEmails processes all unprocessed emails for an account
+// POST /api/emails/process
+func (h *EmailHandler) ProcessEmails(c *gin.Context) {
+	userID, exists := middleware.GetUserIDFromContext(c)
+	if !exists {
+		c.JSON(http.StatusUnauthorized, gin.H{
+			"success": false,
+			"error": gin.H{
+				"code":    "AUTH_FAILED",
+				"message": "User not authenticated",
+			},
+		})
+		return
+	}
+
+	var req ProcessRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"success": false,
+			"error": gin.H{
+				"code":    "VALIDATION_ERROR",
+				"message": "Invalid request body",
+			},
+		})
+		return
+	}
+
+	h.logService.LogInfo(userID, models.LogModuleEmail, "process", "Starting email processing", map[string]interface{}{
+		"account_id": req.AccountID,
+	})
+
+	processedCount, err := h.emailService.ProcessAccountEmails(userID, req.AccountID)
+	if err != nil {
+		if err == services.ErrAccountNotFound {
+			c.JSON(http.StatusNotFound, gin.H{
+				"success": false,
+				"error": gin.H{
+					"code":    "NOT_FOUND",
+					"message": "Account not found",
+				},
+			})
+			return
+		}
+		h.logService.LogError(userID, models.LogModuleEmail, "process", "Email processing failed", map[string]interface{}{
+			"account_id": req.AccountID,
+			"error":      err.Error(),
+		})
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"success": false,
+			"error": gin.H{
+				"code":    "INTERNAL_ERROR",
+				"message": "Failed to process emails: " + err.Error(),
+			},
+		})
+		return
+	}
+
+	h.logService.LogInfo(userID, models.LogModuleEmail, "process", "Email processing completed", map[string]interface{}{
+		"account_id":      req.AccountID,
+		"processed_count": processedCount,
+	})
+
+	c.JSON(http.StatusOK, gin.H{
+		"success": true,
+		"data": gin.H{
+			"processed_count": processedCount,
+		},
+		"message": "Emails processed successfully",
+	})
+}

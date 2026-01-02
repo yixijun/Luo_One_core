@@ -2558,3 +2558,48 @@ func (s *EmailService) ParseAndSaveAttachments(userID, emailID uint) ([]Attachme
 
 	return result, nil
 }
+
+// ProcessAccountEmails processes all unprocessed emails for an account
+// Returns the number of emails processed
+func (s *EmailService) ProcessAccountEmails(userID, accountID uint) (int, error) {
+	// Verify user owns the account
+	_, err := s.accountService.GetAccountByIDAndUserID(accountID, userID)
+	if err != nil {
+		return 0, err
+	}
+
+	// Get all emails without processed results
+	var emails []models.Email
+	if err := s.db.Where("account_id = ?", accountID).
+		Joins("LEFT JOIN processed_results ON processed_results.email_id = emails.id").
+		Where("processed_results.id IS NULL").
+		Find(&emails).Error; err != nil {
+		return 0, err
+	}
+
+	s.logService.LogInfo(userID, models.LogModuleEmail, "process_account", "Starting batch processing", map[string]interface{}{
+		"account_id":    accountID,
+		"email_count":   len(emails),
+	})
+
+	processedCount := 0
+	for _, email := range emails {
+		emailCopy := email // Create a copy for the goroutine
+		if _, err := s.processor.ProcessAndSaveEmail(userID, accountID, &emailCopy); err != nil {
+			s.logService.LogWarn(userID, models.LogModuleEmail, "process_email", "Failed to process email", map[string]interface{}{
+				"email_id": email.ID,
+				"error":    err.Error(),
+			})
+			continue
+		}
+		processedCount++
+	}
+
+	s.logService.LogInfo(userID, models.LogModuleEmail, "process_account", "Batch processing completed", map[string]interface{}{
+		"account_id":      accountID,
+		"total_emails":    len(emails),
+		"processed_count": processedCount,
+	})
+
+	return processedCount, nil
+}
