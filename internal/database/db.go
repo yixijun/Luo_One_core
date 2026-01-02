@@ -69,6 +69,36 @@ func runMigrations(db *gorm.DB) error {
 		if !db.Migrator().HasColumn(&models.UserSettings{}, "font") {
 			db.Migrator().AddColumn(&models.UserSettings{}, "font")
 		}
+		// 确保 AI Base URL 字段存在
+		if !db.Migrator().HasColumn(&models.UserSettings{}, "ai_base_url") {
+			db.Migrator().AddColumn(&models.UserSettings{}, "ai_base_url")
+		}
+		// 确保处理模式字段存在
+		if !db.Migrator().HasColumn(&models.UserSettings{}, "extract_code_mode") {
+			db.Migrator().AddColumn(&models.UserSettings{}, "extract_code_mode")
+		}
+		if !db.Migrator().HasColumn(&models.UserSettings{}, "detect_ad_mode") {
+			db.Migrator().AddColumn(&models.UserSettings{}, "detect_ad_mode")
+		}
+		if !db.Migrator().HasColumn(&models.UserSettings{}, "summarize_mode") {
+			db.Migrator().AddColumn(&models.UserSettings{}, "summarize_mode")
+		}
+		if !db.Migrator().HasColumn(&models.UserSettings{}, "judge_importance_mode") {
+			db.Migrator().AddColumn(&models.UserSettings{}, "judge_importance_mode")
+		}
+		// 确保提示词字段存在
+		if !db.Migrator().HasColumn(&models.UserSettings{}, "prompt_extract_code") {
+			db.Migrator().AddColumn(&models.UserSettings{}, "prompt_extract_code")
+		}
+		if !db.Migrator().HasColumn(&models.UserSettings{}, "prompt_detect_ad") {
+			db.Migrator().AddColumn(&models.UserSettings{}, "prompt_detect_ad")
+		}
+		if !db.Migrator().HasColumn(&models.UserSettings{}, "prompt_summarize") {
+			db.Migrator().AddColumn(&models.UserSettings{}, "prompt_summarize")
+		}
+		if !db.Migrator().HasColumn(&models.UserSettings{}, "prompt_judge_importance") {
+			db.Migrator().AddColumn(&models.UserSettings{}, "prompt_judge_importance")
+		}
 	}
 
 	_ = db.Migrator().DropIndex(&models.Email{}, "message_id")
