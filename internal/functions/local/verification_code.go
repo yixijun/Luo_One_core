@@ -9,6 +9,8 @@ import (
 // Common verification code patterns - ordered by specificity (most specific first)
 var verificationCodePatterns = []*regexp.Regexp{
 	// Chinese patterns for verification codes (highest priority)
+	// Pattern: "验证码是123abc" - code after "是"
+	regexp.MustCompile(`(?i)(?:验证码|校验码|确认码|动态码|安全码|授权码|登录码|登陆码)(?:是|为)[：:\s]*([A-Za-z0-9]{4,8})`),
 	// Allow code to be followed by punctuation like comma, period, etc.
 	regexp.MustCompile(`(?i)(?:验证码|校验码|确认码|动态码|安全码|授权码|登录码|登陆码)[：:\s]*([A-Za-z0-9]{4,8})(?:[，,。.\s]|$)`),
 	// Pattern: code in brackets with Chinese keyword
