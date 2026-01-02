@@ -319,6 +319,7 @@ func (s *EmailService) FetchNewEmailsWithDays(userID, accountID uint, days int) 
 
 // FetchNewEmailsWithOptions fetches emails with more control options
 // noLimit: if true, don't limit the number of emails fetched (for full sync)
+// 使用单连接顺序获取，更可靠
 func (s *EmailService) FetchNewEmailsWithOptions(userID, accountID uint, days int, noLimit bool) ([]FetchedEmail, error) {
 	account, err := s.accountService.GetAccountByIDAndUserID(accountID, userID)
 	if err != nil {
@@ -339,7 +340,7 @@ func (s *EmailService) FetchNewEmailsWithOptions(userID, accountID uint, days in
 	}
 	defer c.Logout()
 
-	// Select INBOX (read-only mode for safety)
+	// Select INBOX
 	mbox, err := c.Select("INBOX", false)
 	if err != nil {
 		return nil, fmt.Errorf("failed to select INBOX: %v", err)
@@ -348,89 +349,31 @@ func (s *EmailService) FetchNewEmailsWithOptions(userID, accountID uint, days in
 	s.logService.LogInfo(userID, models.LogModuleEmail, "fetch", "INBOX selected", map[string]interface{}{
 		"account_id":     accountID,
 		"total_messages": mbox.Messages,
-		"uidnext":        mbox.UidNext,
-		"last_sync_at":   account.LastSyncAt,
-		"fetch_days":     days,
 	})
 
 	if mbox.Messages == 0 {
 		return []FetchedEmail{}, nil
 	}
 
-	// 快速检查：增量同步时，先检查是否有新邮件
-	// 通过比较数据库中最大的 UID 和服务器的 UIDNEXT
-	if days == 0 && !account.LastSyncAt.IsZero() {
-		var maxUID uint32
-		var lastEmail models.Email
-		if err := s.db.Where("account_id = ?", accountID).Order("id DESC").First(&lastEmail).Error; err == nil {
-			// 从 message_id 中提取 UID（如果是 uid:xxx 格式）
-			if strings.HasPrefix(lastEmail.MessageID, "uid:") {
-				if uid, err := strconv.ParseUint(strings.TrimPrefix(lastEmail.MessageID, "uid:"), 10, 32); err == nil {
-					maxUID = uint32(uid)
-				}
-			}
-		}
-		
-		// 如果本地最大 UID 接近服务器的 UIDNEXT，说明没有新邮件
-		if maxUID > 0 && mbox.UidNext > 0 && maxUID >= mbox.UidNext-1 {
-			s.logService.LogInfo(userID, models.LogModuleEmail, "fetch", "No new emails (UID check)", map[string]interface{}{
-				"local_max_uid": maxUID,
-				"server_uidnext": mbox.UidNext,
-			})
-			return []FetchedEmail{}, nil
-		}
-	}
-
-	// Determine search criteria based on days parameter
-	// days == -1: fetch all emails (no criteria)
-	// days == 0: incremental sync (use SINCE if has last sync)
-	// days > 0: fetch emails from last N days
+	// Determine search criteria
 	criteria := imap.NewSearchCriteria()
-	useSince := false
-	
 	if days == -1 {
-		// Fetch all emails - no criteria needed
-		s.logService.LogInfo(userID, models.LogModuleEmail, "fetch", "Fetching all emails (days=-1)", map[string]interface{}{
-			"total": mbox.Messages,
-		})
+		// Fetch all emails - no criteria
 	} else if days == 0 {
-		// Incremental sync - check if we have existing emails
 		var existingCount int64
-		_ = s.db.Model(&models.Email{}).Where("account_id = ?", accountID).Count(&existingCount).Error
-
+		s.db.Model(&models.Email{}).Where("account_id = ?", accountID).Count(&existingCount)
 		if existingCount > 0 && !account.LastSyncAt.IsZero() {
-			// Use SINCE for incremental sync
 			sinceDate := account.LastSyncAt.AddDate(0, 0, -1)
 			criteria.Since = time.Date(sinceDate.Year(), sinceDate.Month(), sinceDate.Day(), 0, 0, 0, 0, time.UTC)
-			useSince = true
-			s.logService.LogInfo(userID, models.LogModuleEmail, "fetch", "Incremental sync with SINCE", map[string]interface{}{
-				"since":          criteria.Since,
-				"existing_count": existingCount,
-			})
-		} else {
-			// First sync - fetch all
-			s.logService.LogInfo(userID, models.LogModuleEmail, "fetch", "First sync, fetching all emails", map[string]interface{}{
-				"total": mbox.Messages,
-			})
 		}
 	} else {
-		// Fetch emails from last N days
 		sinceDate := time.Now().AddDate(0, 0, -days)
 		criteria.Since = time.Date(sinceDate.Year(), sinceDate.Month(), sinceDate.Day(), 0, 0, 0, 0, time.UTC)
-		useSince = true
-		s.logService.LogInfo(userID, models.LogModuleEmail, "fetch", "Fetching emails by days", map[string]interface{}{
-			"days":  days,
-			"since": criteria.Since,
-		})
 	}
 
-	// Use Search to get sequence numbers
+	// Search for messages
 	seqNums, err := c.Search(criteria)
-	if err != nil {
-		s.logService.LogWarn(userID, models.LogModuleEmail, "fetch", "Search failed", map[string]interface{}{
-			"error": err.Error(),
-		})
-		// Fallback: use sequence range 1:*
+	if err != nil || len(seqNums) == 0 {
 		seqNums = make([]uint32, mbox.Messages)
 		for i := uint32(1); i <= mbox.Messages; i++ {
 			seqNums[i-1] = i
@@ -438,156 +381,80 @@ func (s *EmailService) FetchNewEmailsWithOptions(userID, accountID uint, days in
 	}
 
 	s.logService.LogInfo(userID, models.LogModuleEmail, "fetch", "Search completed", map[string]interface{}{
-		"account_id": accountID,
 		"found_msgs": len(seqNums),
-		"use_since":  useSince,
 	})
-
-	// If SINCE search returned 0 results but we expected some, fallback to all
-	if len(seqNums) == 0 && useSince && mbox.Messages > 0 {
-		s.logService.LogWarn(userID, models.LogModuleEmail, "fetch", "SINCE search returned 0, falling back to all messages", map[string]interface{}{
-			"total_messages": mbox.Messages,
-		})
-		seqNums = make([]uint32, mbox.Messages)
-		for i := uint32(1); i <= mbox.Messages; i++ {
-			seqNums[i-1] = i
-		}
-	}
 
 	if len(seqNums) == 0 {
 		return []FetchedEmail{}, nil
 	}
 
-	// 限制每次同步的邮件数量，避免超时
-	// 只获取最新的邮件（序号最大的）
-	// 如果 noLimit 为 true，则不限制（用于全量同步）
-	const maxSyncEmails = 500
+	// Limit sync count
+	const maxSyncEmails = 200
 	if !noLimit && len(seqNums) > maxSyncEmails {
-		s.logService.LogInfo(userID, models.LogModuleEmail, "fetch", "Limiting sync to recent emails", map[string]interface{}{
-			"total":   len(seqNums),
-			"limited": maxSyncEmails,
-		})
-		// 取最后 maxSyncEmails 个（最新的邮件）
 		seqNums = seqNums[len(seqNums)-maxSyncEmails:]
 	}
 
-	// 第一步：快速获取邮件的 envelope（元数据）
-	// 使用多连接并发获取，不获取 body
-	const numWorkers = 5
-	const batchSize = 50
+	// 使用单连接获取邮件
+	const batchSize = 10
+	var fetchedEmails []FetchedEmail
 
-	type msgInfo struct {
-		seqNum   uint32
-		uid      uint32
-		envelope *imap.Envelope
-	}
-
-	totalMsgs := len(seqNums)
-	chunkSize := (totalMsgs + numWorkers - 1) / numWorkers
-
-	resultChan := make(chan []msgInfo, numWorkers)
-	var wg sync.WaitGroup
-
-	s.logService.LogInfo(userID, models.LogModuleEmail, "fetch", "Phase 1: Fetching envelopes", map[string]interface{}{
-		"total_msgs": totalMsgs,
-		"workers":    numWorkers,
+	s.logService.LogInfo(userID, models.LogModuleEmail, "fetch", "Fetching emails", map[string]interface{}{
+		"count": len(seqNums),
 	})
 
-	for workerIdx := 0; workerIdx < numWorkers; workerIdx++ {
-		start := workerIdx * chunkSize
-		if start >= totalMsgs {
-			break
+	// Step 1: 获取所有邮件的 UID 和 MessageID
+	type msgMeta struct {
+		uid       uint32
+		messageID string
+		envelope  *imap.Envelope
+	}
+	var allMetas []msgMeta
+
+	for i := 0; i < len(seqNums); i += batchSize {
+		batchEnd := i + batchSize
+		if batchEnd > len(seqNums) {
+			batchEnd = len(seqNums)
 		}
-		end := start + chunkSize
-		if end > totalMsgs {
-			end = totalMsgs
+		batch := seqNums[i:batchEnd]
+
+		seqSet := new(imap.SeqSet)
+		seqSet.AddNum(batch...)
+
+		items := []imap.FetchItem{imap.FetchUid, imap.FetchEnvelope}
+		messages := make(chan *imap.Message, batchSize)
+		done := make(chan error, 1)
+
+		go func() {
+			done <- c.Fetch(seqSet, items, messages)
+		}()
+
+		for msg := range messages {
+			if msg == nil || msg.Envelope == nil {
+				continue
+			}
+			messageID := msg.Envelope.MessageId
+			if messageID == "" {
+				messageID = fmt.Sprintf("uid:%d", msg.Uid)
+			}
+			allMetas = append(allMetas, msgMeta{
+				uid:       msg.Uid,
+				messageID: messageID,
+				envelope:  msg.Envelope,
+			})
 		}
-		chunk := seqNums[start:end]
-
-		wg.Add(1)
-		go func(workerID int, seqs []uint32) {
-			defer wg.Done()
-
-			var results []msgInfo
-
-			workerClient, err := s.connectIMAP(account)
-			if err != nil {
-				resultChan <- results
-				return
-			}
-			defer workerClient.Logout()
-
-			_, err = workerClient.Select("INBOX", false)
-			if err != nil {
-				resultChan <- results
-				return
-			}
-
-			// 只获取 envelope，不获取 body
-			for i := 0; i < len(seqs); i += batchSize {
-				batchEnd := i + batchSize
-				if batchEnd > len(seqs) {
-					batchEnd = len(seqs)
-				}
-				batch := seqs[i:batchEnd]
-
-				batchSeqSet := new(imap.SeqSet)
-				batchSeqSet.AddNum(batch...)
-
-				items := []imap.FetchItem{imap.FetchUid, imap.FetchEnvelope}
-
-				messages := make(chan *imap.Message, batchSize)
-				done := make(chan error, 1)
-
-				go func() {
-					done <- workerClient.Fetch(batchSeqSet, items, messages)
-				}()
-
-				for msg := range messages {
-					if msg == nil || msg.Envelope == nil {
-						continue
-					}
-					results = append(results, msgInfo{
-						seqNum:   msg.SeqNum,
-						uid:      msg.Uid,
-						envelope: msg.Envelope,
-					})
-				}
-				<-done
-			}
-
-			resultChan <- results
-		}(workerIdx, chunk)
+		<-done
 	}
 
-	go func() {
-		wg.Wait()
-		close(resultChan)
-	}()
-
-	var allMsgInfos []msgInfo
-	for results := range resultChan {
-		allMsgInfos = append(allMsgInfos, results...)
-	}
-
-	s.logService.LogInfo(userID, models.LogModuleEmail, "fetch", "Phase 1 completed", map[string]interface{}{
-		"envelope_count": len(allMsgInfos),
+	s.logService.LogInfo(userID, models.LogModuleEmail, "fetch", "Got envelopes", map[string]interface{}{
+		"count": len(allMetas),
 	})
 
-	// 第二步：批量查询数据库，过滤出新邮件
-	// 先收集所有 messageID
-	msgIDToInfo := make(map[string]msgInfo)
+	// Step 2: 过滤已存在的邮件
 	var allMessageIDs []string
-	for _, info := range allMsgInfos {
-		messageID := info.envelope.MessageId
-		if messageID == "" {
-			messageID = fmt.Sprintf("uid:%d", info.uid)
-		}
-		msgIDToInfo[messageID] = info
-		allMessageIDs = append(allMessageIDs, messageID)
+	for _, meta := range allMetas {
+		allMessageIDs = append(allMessageIDs, meta.messageID)
 	}
 
-	// 批量查询已存在的邮件（每批500个）
 	existingIDs := make(map[string]bool)
 	const dbBatchSize = 500
 	for i := 0; i < len(allMessageIDs); i += dbBatchSize {
@@ -595,194 +462,114 @@ func (s *EmailService) FetchNewEmailsWithOptions(userID, accountID uint, days in
 		if end > len(allMessageIDs) {
 			end = len(allMessageIDs)
 		}
-		batch := allMessageIDs[i:end]
-		
 		var existingEmails []models.Email
-		s.db.Select("message_id").Where("account_id = ? AND message_id IN ?", accountID, batch).Find(&existingEmails)
+		s.db.Select("message_id").Where("account_id = ? AND message_id IN ?", accountID, allMessageIDs[i:end]).Find(&existingEmails)
 		for _, e := range existingEmails {
 			existingIDs[e.MessageID] = true
 		}
 	}
 
-	// 过滤出新邮件
-	var newMsgInfos []msgInfo
-	for messageID, info := range msgIDToInfo {
-		if !existingIDs[messageID] {
-			newMsgInfos = append(newMsgInfos, info)
+	var newMetas []msgMeta
+	for _, meta := range allMetas {
+		if !existingIDs[meta.messageID] {
+			newMetas = append(newMetas, meta)
 		}
 	}
 
-	s.logService.LogInfo(userID, models.LogModuleEmail, "fetch", "Phase 2: New emails to fetch body", map[string]interface{}{
-		"total_envelopes": len(allMsgInfos),
-		"new_emails":      len(newMsgInfos),
-		"skipped":         len(allMsgInfos) - len(newMsgInfos),
+	s.logService.LogInfo(userID, models.LogModuleEmail, "fetch", "Filtered new emails", map[string]interface{}{
+		"total":   len(allMetas),
+		"new":     len(newMetas),
+		"skipped": len(allMetas) - len(newMetas),
 	})
 
-	// 如果没有新邮件，直接返回空
-	if len(newMsgInfos) == 0 {
+	if len(newMetas) == 0 {
 		return []FetchedEmail{}, nil
 	}
 
-	// 第三步：只为新邮件获取 body
-	// 限制并发获取 body 的数量，避免超时
-	// 如果 noLimit 为 true，则不限制（用于全量同步）
-	const maxBodyFetch = 200
-	if !noLimit && len(newMsgInfos) > maxBodyFetch {
-		// 只获取最新的 maxBodyFetch 封邮件的 body
-		// 按 UID 排序，取最大的（最新的）
-		// 简单处理：只取前 maxBodyFetch 个
-		s.logService.LogInfo(userID, models.LogModuleEmail, "fetch", "Limiting body fetch", map[string]interface{}{
-			"new_emails": len(newMsgInfos),
-			"limit":      maxBodyFetch,
-		})
-		newMsgInfos = newMsgInfos[len(newMsgInfos)-maxBodyFetch:]
+	// Limit body fetch
+	const maxBodyFetch = 50
+	if !noLimit && len(newMetas) > maxBodyFetch {
+		newMetas = newMetas[len(newMetas)-maxBodyFetch:]
 	}
 
-	// 收集需要获取 body 的 UID
+	// Step 3: 获取新邮件的 body（使用同一连接）
 	var uidsToFetch []uint32
-	uidToInfo := make(map[uint32]msgInfo)
-	for _, info := range newMsgInfos {
-		uidsToFetch = append(uidsToFetch, info.uid)
-		uidToInfo[info.uid] = info
+	uidToMeta := make(map[uint32]msgMeta)
+	for _, meta := range newMetas {
+		uidsToFetch = append(uidsToFetch, meta.uid)
+		uidToMeta[meta.uid] = meta
 	}
 
-	// 并发获取 body
-	bodyChunkSize := (len(uidsToFetch) + numWorkers - 1) / numWorkers
-	bodyResultChan := make(chan map[uint32][]byte, numWorkers)
-	errorChan := make(chan error, numWorkers)
-	var bodyWg sync.WaitGroup
-
-	s.logService.LogInfo(userID, models.LogModuleEmail, "fetch", "Phase 3: Fetching bodies", map[string]interface{}{
+	s.logService.LogInfo(userID, models.LogModuleEmail, "fetch", "Fetching bodies", map[string]interface{}{
 		"count": len(uidsToFetch),
 	})
 
-	for workerIdx := 0; workerIdx < numWorkers; workerIdx++ {
-		start := workerIdx * bodyChunkSize
-		if start >= len(uidsToFetch) {
-			break
-		}
-		end := start + bodyChunkSize
-		if end > len(uidsToFetch) {
-			end = len(uidsToFetch)
-		}
-		chunk := uidsToFetch[start:end]
-
-		bodyWg.Add(1)
-		go func(workerID int, uids []uint32) {
-			defer bodyWg.Done()
-
-			results := make(map[uint32][]byte)
-
-			workerClient, err := s.connectIMAP(account)
-			if err != nil {
-				errorChan <- fmt.Errorf("worker %d: IMAP connect failed: %v", workerID, err)
-				bodyResultChan <- results
-				return
-			}
-			defer workerClient.Logout()
-
-			_, err = workerClient.Select("INBOX", false)
-			if err != nil {
-				errorChan <- fmt.Errorf("worker %d: Select INBOX failed: %v", workerID, err)
-				bodyResultChan <- results
-				return
-			}
-
-			section := &imap.BodySectionName{Peek: true}
-			for i := 0; i < len(uids); i += 20 {
-				batchEnd := i + 20
-				if batchEnd > len(uids) {
-					batchEnd = len(uids)
-				}
-				batch := uids[i:batchEnd]
-
-				uidSet := new(imap.SeqSet)
-				uidSet.AddNum(batch...)
-
-				items := []imap.FetchItem{imap.FetchUid, section.FetchItem()}
-
-				messages := make(chan *imap.Message, 20)
-				done := make(chan error, 1)
-
-				go func() {
-					done <- workerClient.UidFetch(uidSet, items, messages)
-				}()
-
-				for msg := range messages {
-					if msg == nil {
-						continue
-					}
-					for _, literal := range msg.Body {
-						content, err := io.ReadAll(literal)
-						if err == nil {
-							results[msg.Uid] = content
-						}
-					}
-				}
-				fetchErr := <-done
-				if fetchErr != nil {
-					errorChan <- fmt.Errorf("worker %d: UidFetch failed: %v", workerID, fetchErr)
-				}
-			}
-
-			bodyResultChan <- results
-		}(workerIdx, chunk)
-	}
-
-	go func() {
-		bodyWg.Wait()
-		close(bodyResultChan)
-		close(errorChan)
-	}()
-
-	// Collect errors
-	var fetchErrors []string
-	go func() {
-		for err := range errorChan {
-			fetchErrors = append(fetchErrors, err.Error())
-		}
-	}()
-
+	section := &imap.BodySectionName{Peek: true}
 	uidToBody := make(map[uint32][]byte)
-	for results := range bodyResultChan {
-		for uid, body := range results {
-			uidToBody[uid] = body
+
+	for i := 0; i < len(uidsToFetch); i += batchSize {
+		batchEnd := i + batchSize
+		if batchEnd > len(uidsToFetch) {
+			batchEnd = len(uidsToFetch)
+		}
+		batch := uidsToFetch[i:batchEnd]
+
+		uidSet := new(imap.SeqSet)
+		uidSet.AddNum(batch...)
+
+		items := []imap.FetchItem{imap.FetchUid, section.FetchItem()}
+		messages := make(chan *imap.Message, batchSize)
+		done := make(chan error, 1)
+
+		go func() {
+			done <- c.UidFetch(uidSet, items, messages)
+		}()
+
+		for msg := range messages {
+			if msg == nil {
+				continue
+			}
+			for _, literal := range msg.Body {
+				content, err := io.ReadAll(literal)
+				if err == nil && len(content) > 0 {
+					uidToBody[msg.Uid] = content
+				}
+			}
+		}
+
+		if err := <-done; err != nil {
+			s.logService.LogWarn(userID, models.LogModuleEmail, "fetch", "UidFetch error", map[string]interface{}{
+				"error": err.Error(),
+			})
 		}
 	}
 
-	s.logService.LogInfo(userID, models.LogModuleEmail, "fetch", "Phase 3 completed", map[string]interface{}{
-		"bodies_fetched": len(uidToBody),
-		"errors":         fetchErrors,
+	s.logService.LogInfo(userID, models.LogModuleEmail, "fetch", "Bodies fetched", map[string]interface{}{
+		"requested": len(uidsToFetch),
+		"fetched":   len(uidToBody),
 	})
 
-	// 第四步：构建最终邮件列表
-	var fetchedEmails []FetchedEmail
-	var parseErrors int
-	var bodyMissing int
+	// Step 4: 构建邮件列表
+	var parseErrors, bodyMissing int
 
-	for _, info := range newMsgInfos {
+	for _, meta := range newMetas {
 		email := FetchedEmail{
-			UID:     info.uid,
-			Subject: info.envelope.Subject,
-			Date:    info.envelope.Date,
+			UID:       meta.uid,
+			MessageID: meta.messageID,
+			Subject:   meta.envelope.Subject,
+			Date:      meta.envelope.Date,
 		}
 
-		if info.envelope.MessageId != "" {
-			email.MessageID = info.envelope.MessageId
-		} else {
-			email.MessageID = fmt.Sprintf("uid:%d", info.uid)
+		if len(meta.envelope.From) > 0 {
+			email.From = formatAddress(meta.envelope.From[0])
 		}
 
-		if len(info.envelope.From) > 0 {
-			email.From = formatAddress(info.envelope.From[0])
-		}
-
-		for _, addr := range info.envelope.To {
+		for _, addr := range meta.envelope.To {
 			email.To = append(email.To, formatAddress(addr))
 		}
 
 		// 解析 body
-		if body, ok := uidToBody[info.uid]; ok && len(body) > 0 {
+		if body, ok := uidToBody[meta.uid]; ok && len(body) > 0 {
 			email.RawContent = body
 
 			r := bytes.NewReader(body)
@@ -800,7 +587,6 @@ func (s *EmailService) FetchNewEmailsWithOptions(userID, accountID uint, days in
 				s.parseMessageEntity(entity, &email)
 			}
 		} else {
-			// Body not fetched, log warning
 			bodyMissing++
 		}
 
@@ -812,7 +598,6 @@ func (s *EmailService) FetchNewEmailsWithOptions(userID, accountID uint, days in
 		"fetched_count": len(fetchedEmails),
 		"parse_errors":  parseErrors,
 		"body_missing":  bodyMissing,
-		"bodies_in_map": len(uidToBody),
 	})
 
 	return fetchedEmails, nil
