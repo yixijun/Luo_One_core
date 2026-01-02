@@ -123,6 +123,8 @@ func SetupRouter(db *gorm.DB, cfg *config.Config) (*gin.Engine, *middleware.Auth
 				emails.POST("/sync", emailHandler.SyncEmails)
 				emails.GET("/sync/progress", emailHandler.GetSyncProgress) // 获取全量同步进度
 				emails.POST("/process", emailHandler.ProcessEmails) // 处理邮件（提取验证码等）
+				emails.POST("/process-single", emailHandler.ProcessSingleEmail) // 处理单封邮件
+				emails.DELETE("/:id/processed-result", emailHandler.DeleteProcessedResult) // 删除处理结果
 				// Attachment routes
 				emails.GET("/:id/attachments", emailHandler.ListAttachments)
 				emails.GET("/:id/attachments/:filename", emailHandler.DownloadAttachment)

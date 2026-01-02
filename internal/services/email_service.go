@@ -2600,3 +2600,72 @@ func (s *EmailService) ProcessAccountEmails(userID, accountID uint) (int, error)
 
 	return processedCount, nil
 }
+
+// ProcessSingleEmail processes a single email
+func (s *EmailService) ProcessSingleEmail(userID, emailID uint) error {
+	// Get the email
+	var email models.Email
+	if err := s.db.First(&email, emailID).Error; err != nil {
+		return ErrEmailNotFound
+	}
+
+	// Verify user owns the email's account
+	_, err := s.accountService.GetAccountByIDAndUserID(email.AccountID, userID)
+	if err != nil {
+		return ErrEmailNotFound
+	}
+
+	s.logService.LogInfo(userID, models.LogModuleEmail, "process_single", "Processing single email", map[string]interface{}{
+		"email_id": emailID,
+	})
+
+	// Process the email
+	_, err = s.processor.ProcessAndSaveEmail(userID, email.AccountID, &email)
+	if err != nil {
+		s.logService.LogError(userID, models.LogModuleEmail, "process_single", "Failed to process email", map[string]interface{}{
+			"email_id": emailID,
+			"error":    err.Error(),
+		})
+		return err
+	}
+
+	s.logService.LogInfo(userID, models.LogModuleEmail, "process_single", "Email processed successfully", map[string]interface{}{
+		"email_id": emailID,
+	})
+
+	return nil
+}
+
+// DeleteProcessedResult deletes the processed result for an email
+func (s *EmailService) DeleteProcessedResult(userID, emailID uint) error {
+	// Get the email
+	var email models.Email
+	if err := s.db.First(&email, emailID).Error; err != nil {
+		return ErrEmailNotFound
+	}
+
+	// Verify user owns the email's account
+	_, err := s.accountService.GetAccountByIDAndUserID(email.AccountID, userID)
+	if err != nil {
+		return ErrEmailNotFound
+	}
+
+	s.logService.LogInfo(userID, models.LogModuleEmail, "delete_result", "Deleting processed result", map[string]interface{}{
+		"email_id": emailID,
+	})
+
+	// Delete the processed result
+	if err := s.db.Where("email_id = ?", emailID).Delete(&models.ProcessedResult{}).Error; err != nil {
+		s.logService.LogError(userID, models.LogModuleEmail, "delete_result", "Failed to delete processed result", map[string]interface{}{
+			"email_id": emailID,
+			"error":    err.Error(),
+		})
+		return err
+	}
+
+	s.logService.LogInfo(userID, models.LogModuleEmail, "delete_result", "Processed result deleted", map[string]interface{}{
+		"email_id": emailID,
+	})
+
+	return nil
+}

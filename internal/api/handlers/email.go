@@ -1011,3 +1011,142 @@ func (h *EmailHandler) ProcessEmails(c *gin.Context) {
 		"message": "Emails processed successfully",
 	})
 }
+
+// ProcessSingleEmailRequest represents the request to process a single email
+type ProcessSingleEmailRequest struct {
+	EmailID uint `json:"email_id" binding:"required"`
+}
+
+// ProcessSingleEmail processes a single email
+// POST /api/emails/process-single
+func (h *EmailHandler) ProcessSingleEmail(c *gin.Context) {
+	userID, exists := middleware.GetUserIDFromContext(c)
+	if !exists {
+		c.JSON(http.StatusUnauthorized, gin.H{
+			"success": false,
+			"error": gin.H{
+				"code":    "AUTH_FAILED",
+				"message": "User not authenticated",
+			},
+		})
+		return
+	}
+
+	var req ProcessSingleEmailRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"success": false,
+			"error": gin.H{
+				"code":    "VALIDATION_ERROR",
+				"message": "Invalid request body",
+			},
+		})
+		return
+	}
+
+	h.logService.LogInfo(userID, models.LogModuleEmail, "process_single", "Processing single email", map[string]interface{}{
+		"email_id": req.EmailID,
+	})
+
+	err := h.emailService.ProcessSingleEmail(userID, req.EmailID)
+	if err != nil {
+		if err == services.ErrEmailNotFound {
+			c.JSON(http.StatusNotFound, gin.H{
+				"success": false,
+				"error": gin.H{
+					"code":    "NOT_FOUND",
+					"message": "Email not found",
+				},
+			})
+			return
+		}
+		h.logService.LogError(userID, models.LogModuleEmail, "process_single", "Email processing failed", map[string]interface{}{
+			"email_id": req.EmailID,
+			"error":    err.Error(),
+		})
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"success": false,
+			"error": gin.H{
+				"code":    "INTERNAL_ERROR",
+				"message": "Failed to process email: " + err.Error(),
+			},
+		})
+		return
+	}
+
+	h.logService.LogInfo(userID, models.LogModuleEmail, "process_single", "Email processed successfully", map[string]interface{}{
+		"email_id": req.EmailID,
+	})
+
+	c.JSON(http.StatusOK, gin.H{
+		"success": true,
+		"message": "Email processed successfully",
+	})
+}
+
+// DeleteProcessedResult deletes the processed result for an email
+// DELETE /api/emails/:id/processed-result
+func (h *EmailHandler) DeleteProcessedResult(c *gin.Context) {
+	userID, exists := middleware.GetUserIDFromContext(c)
+	if !exists {
+		c.JSON(http.StatusUnauthorized, gin.H{
+			"success": false,
+			"error": gin.H{
+				"code":    "AUTH_FAILED",
+				"message": "User not authenticated",
+			},
+		})
+		return
+	}
+
+	emailID, err := strconv.ParseUint(c.Param("id"), 10, 32)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"success": false,
+			"error": gin.H{
+				"code":    "VALIDATION_ERROR",
+				"message": "Invalid email ID",
+			},
+		})
+		return
+	}
+
+	h.logService.LogInfo(userID, models.LogModuleEmail, "delete_result", "Deleting processed result", map[string]interface{}{
+		"email_id": emailID,
+	})
+
+	err = h.emailService.DeleteProcessedResult(userID, uint(emailID))
+	if err != nil {
+		if err == services.ErrEmailNotFound {
+			c.JSON(http.StatusNotFound, gin.H{
+				"success": false,
+				"error": gin.H{
+					"code":    "NOT_FOUND",
+					"message": "Email not found",
+				},
+			})
+			return
+		}
+		h.logService.LogError(userID, models.LogModuleEmail, "delete_result", "Failed to delete processed result", map[string]interface{}{
+			"email_id": emailID,
+			"error":    err.Error(),
+		})
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"success": false,
+			"error": gin.H{
+				"code":    "INTERNAL_ERROR",
+				"message": "Failed to delete processed result: " + err.Error(),
+			},
+		})
+		return
+	}
+
+	h.logService.LogInfo(userID, models.LogModuleEmail, "delete_result", "Processed result deleted", map[string]interface{}{
+		"email_id": emailID,
+	})
+
+	c.JSON(http.StatusOK, gin.H{
+		"success": true,
+		"message": "Processed result deleted successfully",
+	})
+}
