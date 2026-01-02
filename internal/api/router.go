@@ -135,6 +135,7 @@ func SetupRouter(db *gorm.DB, cfg *config.Config) (*gin.Engine, *middleware.Auth
 			{
 				settings.GET("", settingsHandler.GetSettings)
 				settings.PUT("", settingsHandler.UpdateSettings)
+				settings.POST("/test-ai", settingsHandler.TestAI)
 			}
 
 			// OAuth routes (protected - need JWT to initiate)

@@ -431,3 +431,24 @@ func (c *Client) ProcessEmail(subject, content, from string, extractCode, detect
 
 	return result, nil
 }
+
+// TestConnection tests the AI API connection with a simple request
+func (c *Client) TestConnection() (string, error) {
+	if !c.IsConfigured() {
+		return "", ErrNotConfigured
+	}
+
+	messages := []ChatMessage{
+		{
+			Role:    "user",
+			Content: "Say 'OK' if you can receive this message.",
+		},
+	}
+
+	response, err := c.sendChatRequest(messages)
+	if err != nil {
+		return "", err
+	}
+
+	return strings.TrimSpace(response), nil
+}

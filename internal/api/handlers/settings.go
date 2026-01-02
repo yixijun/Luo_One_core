@@ -7,6 +7,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/luo-one/core/internal/api/middleware"
 	"github.com/luo-one/core/internal/database/models"
+	"github.com/luo-one/core/internal/functions/ai"
 	"github.com/luo-one/core/internal/services"
 )
 
@@ -258,5 +259,85 @@ func (h *SettingsHandler) UpdateSettings(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{
 		"success": true,
 		"data":    toSettingsResponse(settings),
+	})
+}
+
+// TestAIRequest represents the request to test AI connection
+type TestAIRequest struct {
+	Provider string `json:"provider"`
+	BaseURL  string `json:"base_url"`
+	APIKey   string `json:"api_key"`
+	Model    string `json:"model"`
+}
+
+// TestAI tests the AI API connection
+// POST /api/settings/test-ai
+func (h *SettingsHandler) TestAI(c *gin.Context) {
+	userID, exists := middleware.GetUserIDFromContext(c)
+	if !exists {
+		c.JSON(http.StatusUnauthorized, gin.H{
+			"success": false,
+			"error": gin.H{
+				"code":    "AUTH_FAILED",
+				"message": "User not authenticated",
+			},
+		})
+		return
+	}
+
+	var req TestAIRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"success": false,
+			"error": gin.H{
+				"code":    "VALIDATION_ERROR",
+				"message": "Invalid request body",
+			},
+		})
+		return
+	}
+
+	if req.APIKey == "" {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"success": false,
+			"error": gin.H{
+				"code":    "VALIDATION_ERROR",
+				"message": "API Key is required",
+			},
+		})
+		return
+	}
+
+	// Create AI client and test connection
+	aiClient := ai.NewClient()
+	aiClient.ConfigureWithBaseURL(req.Provider, req.APIKey, req.Model, req.BaseURL)
+
+	response, err := aiClient.TestConnection()
+	if err != nil {
+		h.logService.LogWarn(userID, models.LogModuleAuth, "test_ai", "AI connection test failed", map[string]interface{}{
+			"provider": req.Provider,
+			"error":    err.Error(),
+		})
+		c.JSON(http.StatusOK, gin.H{
+			"success": false,
+			"error": gin.H{
+				"code":    "AI_TEST_FAILED",
+				"message": err.Error(),
+			},
+		})
+		return
+	}
+
+	h.logService.LogInfo(userID, models.LogModuleAuth, "test_ai", "AI connection test successful", map[string]interface{}{
+		"provider": req.Provider,
+		"response": response,
+	})
+
+	c.JSON(http.StatusOK, gin.H{
+		"success": true,
+		"data": gin.H{
+			"response": response,
+		},
+		"message": "AI connection test successful",
 	})
 }
