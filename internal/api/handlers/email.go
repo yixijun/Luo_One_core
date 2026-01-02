@@ -1150,3 +1150,88 @@ func (h *EmailHandler) DeleteProcessedResult(c *gin.Context) {
 		"message": "Processed result deleted successfully",
 	})
 }
+
+// UpdateImportanceRequest represents the request to update email importance
+type UpdateImportanceRequest struct {
+	Importance string `json:"importance" binding:"required"`
+}
+
+// UpdateImportance updates the importance of an email's processed result
+// PUT /api/emails/:id/importance
+func (h *EmailHandler) UpdateImportance(c *gin.Context) {
+	userID, exists := middleware.GetUserIDFromContext(c)
+	if !exists {
+		c.JSON(http.StatusUnauthorized, gin.H{
+			"success": false,
+			"error": gin.H{
+				"code":    "AUTH_FAILED",
+				"message": "User not authenticated",
+			},
+		})
+		return
+	}
+
+	emailID, err := strconv.ParseUint(c.Param("id"), 10, 32)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"success": false,
+			"error": gin.H{
+				"code":    "VALIDATION_ERROR",
+				"message": "Invalid email ID",
+			},
+		})
+		return
+	}
+
+	var req UpdateImportanceRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"success": false,
+			"error": gin.H{
+				"code":    "VALIDATION_ERROR",
+				"message": "Invalid request body",
+			},
+		})
+		return
+	}
+
+	// 验证重要度值
+	validImportance := map[string]bool{"critical": true, "high": true, "medium": true, "low": true}
+	if !validImportance[req.Importance] {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"success": false,
+			"error": gin.H{
+				"code":    "VALIDATION_ERROR",
+				"message": "Invalid importance value. Must be one of: critical, high, medium, low",
+			},
+		})
+		return
+	}
+
+	err = h.emailService.UpdateEmailImportance(userID, uint(emailID), req.Importance)
+	if err != nil {
+		if err == services.ErrEmailNotFound {
+			c.JSON(http.StatusNotFound, gin.H{
+				"success": false,
+				"error": gin.H{
+					"code":    "NOT_FOUND",
+					"message": "Email not found",
+				},
+			})
+			return
+		}
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"success": false,
+			"error": gin.H{
+				"code":    "INTERNAL_ERROR",
+				"message": "Failed to update importance: " + err.Error(),
+			},
+		})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"success": true,
+		"message": "Importance updated successfully",
+	})
+}

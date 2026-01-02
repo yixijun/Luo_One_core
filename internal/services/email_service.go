@@ -2705,3 +2705,37 @@ func (s *EmailService) DeleteProcessedResult(userID, emailID uint) error {
 
 	return nil
 }
+
+// UpdateEmailImportance updates the importance of an email's processed result
+func (s *EmailService) UpdateEmailImportance(userID, emailID uint, importance string) error {
+	// Get the email
+	var email models.Email
+	if err := s.db.First(&email, emailID).Error; err != nil {
+		return ErrEmailNotFound
+	}
+
+	// Verify user owns the email's account
+	_, err := s.accountService.GetAccountByIDAndUserID(email.AccountID, userID)
+	if err != nil {
+		return ErrEmailNotFound
+	}
+
+	// Update the processed result's importance
+	result := s.db.Model(&models.ProcessedResult{}).Where("email_id = ?", emailID).Update("importance", importance)
+	if result.Error != nil {
+		return result.Error
+	}
+
+	// If no processed result exists, create one
+	if result.RowsAffected == 0 {
+		processedResult := &models.ProcessedResult{
+			EmailID:    emailID,
+			Importance: importance,
+		}
+		if err := s.db.Create(processedResult).Error; err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
