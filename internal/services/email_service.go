@@ -2,6 +2,7 @@ package services
 
 import (
 	"bytes"
+	cryptoRand "crypto/rand"
 	"crypto/sha256"
 	"crypto/tls"
 	"encoding/base64"
@@ -2126,7 +2127,7 @@ func (s *EmailService) buildEmailContent(account *models.EmailAccount, req SendE
 			buf.WriteString("Content-Type: text/plain; charset=utf-8\r\n")
 			buf.WriteString("Content-Transfer-Encoding: base64\r\n")
 			buf.WriteString("\r\n")
-			buf.WriteString(base64.StdEncoding.EncodeToString([]byte(req.Body)))
+			buf.WriteString(wrapBase64(base64.StdEncoding.EncodeToString([]byte(req.Body))))
 			buf.WriteString("\r\n")
 
 			// HTML part
@@ -2134,7 +2135,7 @@ func (s *EmailService) buildEmailContent(account *models.EmailAccount, req SendE
 			buf.WriteString("Content-Type: text/html; charset=utf-8\r\n")
 			buf.WriteString("Content-Transfer-Encoding: base64\r\n")
 			buf.WriteString("\r\n")
-			buf.WriteString(base64.StdEncoding.EncodeToString([]byte(req.HTMLBody)))
+			buf.WriteString(wrapBase64(base64.StdEncoding.EncodeToString([]byte(req.HTMLBody))))
 			buf.WriteString("\r\n")
 
 			buf.WriteString(fmt.Sprintf("--%s--\r\n", altBoundary))
@@ -2143,7 +2144,7 @@ func (s *EmailService) buildEmailContent(account *models.EmailAccount, req SendE
 			buf.WriteString("Content-Type: text/plain; charset=utf-8\r\n")
 			buf.WriteString("Content-Transfer-Encoding: base64\r\n")
 			buf.WriteString("\r\n")
-			buf.WriteString(base64.StdEncoding.EncodeToString([]byte(req.Body)))
+			buf.WriteString(wrapBase64(base64.StdEncoding.EncodeToString([]byte(req.Body))))
 			buf.WriteString("\r\n")
 		}
 
@@ -2160,8 +2161,8 @@ func (s *EmailService) buildEmailContent(account *models.EmailAccount, req SendE
 			buf.WriteString("Content-Transfer-Encoding: base64\r\n")
 			buf.WriteString(fmt.Sprintf("Content-Disposition: attachment; filename=\"%s\"\r\n", encodedFilename))
 			buf.WriteString("\r\n")
-			// Content is already base64 encoded from frontend
-			buf.WriteString(att.Content)
+			// Content is already base64 encoded from frontend, wrap to 76 chars per line
+			buf.WriteString(wrapBase64(att.Content))
 			buf.WriteString("\r\n")
 		}
 
@@ -2177,7 +2178,7 @@ func (s *EmailService) buildEmailContent(account *models.EmailAccount, req SendE
 		buf.WriteString("Content-Type: text/plain; charset=utf-8\r\n")
 		buf.WriteString("Content-Transfer-Encoding: base64\r\n")
 		buf.WriteString("\r\n")
-		buf.WriteString(base64.StdEncoding.EncodeToString([]byte(req.Body)))
+		buf.WriteString(wrapBase64(base64.StdEncoding.EncodeToString([]byte(req.Body))))
 		buf.WriteString("\r\n")
 
 		// HTML part
@@ -2185,7 +2186,7 @@ func (s *EmailService) buildEmailContent(account *models.EmailAccount, req SendE
 		buf.WriteString("Content-Type: text/html; charset=utf-8\r\n")
 		buf.WriteString("Content-Transfer-Encoding: base64\r\n")
 		buf.WriteString("\r\n")
-		buf.WriteString(base64.StdEncoding.EncodeToString([]byte(req.HTMLBody)))
+		buf.WriteString(wrapBase64(base64.StdEncoding.EncodeToString([]byte(req.HTMLBody))))
 		buf.WriteString("\r\n")
 
 		buf.WriteString(fmt.Sprintf("--%s--\r\n", boundary))
@@ -2194,7 +2195,7 @@ func (s *EmailService) buildEmailContent(account *models.EmailAccount, req SendE
 		buf.WriteString("Content-Type: text/plain; charset=utf-8\r\n")
 		buf.WriteString("Content-Transfer-Encoding: base64\r\n")
 		buf.WriteString("\r\n")
-		buf.WriteString(base64.StdEncoding.EncodeToString([]byte(req.Body)))
+		buf.WriteString(wrapBase64(base64.StdEncoding.EncodeToString([]byte(req.Body))))
 	}
 
 	return buf.String()
@@ -2375,13 +2376,48 @@ func generateBoundary() string {
 	return fmt.Sprintf("----=_Part_%d_%s", time.Now().UnixNano(), randomString(16))
 }
 
+// wrapBase64 wraps base64 content to 76 characters per line (MIME standard)
+func wrapBase64(content string) string {
+	// First, clean the base64 content by removing any existing whitespace/newlines
+	// This handles cases where the input already has line breaks
+	cleaned := strings.Map(func(r rune) rune {
+		if r == ' ' || r == '\n' || r == '\r' || r == '\t' {
+			return -1 // Remove whitespace
+		}
+		return r
+	}, content)
+	
+	const lineLength = 76
+	var result strings.Builder
+	for i := 0; i < len(cleaned); i += lineLength {
+		end := i + lineLength
+		if end > len(cleaned) {
+			end = len(cleaned)
+		}
+		result.WriteString(cleaned[i:end])
+		if end < len(cleaned) {
+			result.WriteString("\r\n")
+		}
+	}
+	return result.String()
+}
+
 // randomString generates a random alphanumeric string
 func randomString(n int) string {
 	const letters = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
 	b := make([]byte, n)
+	// Use crypto/rand for better randomness
+	randBytes := make([]byte, n)
+	_, err := io.ReadFull(cryptoRand.Reader, randBytes)
+	if err != nil {
+		// Fallback to time-based if crypto/rand fails
+		for i := range b {
+			b[i] = letters[(time.Now().UnixNano()+int64(i))%int64(len(letters))]
+		}
+		return string(b)
+	}
 	for i := range b {
-		b[i] = letters[time.Now().UnixNano()%int64(len(letters))]
-		time.Sleep(time.Nanosecond)
+		b[i] = letters[int(randBytes[i])%len(letters)]
 	}
 	return string(b)
 }
