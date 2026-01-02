@@ -28,6 +28,7 @@ import (
 	"github.com/emersion/go-message"
 	_ "github.com/emersion/go-message/charset"
 	"github.com/luo-one/core/internal/database/models"
+	"github.com/luo-one/core/internal/functions"
 	"github.com/luo-one/core/internal/user"
 	"gorm.io/gorm"
 )
@@ -92,6 +93,7 @@ type EmailService struct {
 	userManager    *user.Manager
 	userStorage    *user.Storage
 	logService     *LogService
+	processor      *functions.Processor
 }
 
 // NewEmailService creates a new EmailService instance
@@ -102,6 +104,7 @@ func NewEmailService(db *gorm.DB, accountService *AccountService, userManager *u
 		userManager:    userManager,
 		userStorage:    user.NewStorage(userManager),
 		logService:     NewLogService(db),
+		processor:      functions.NewProcessor(db, userManager),
 	}
 }
 
@@ -921,6 +924,16 @@ func (s *EmailService) SyncAndSaveEmailsWithDays(userID, accountID uint, days in
 			})
 		}
 
+		// 处理邮件（提取验证码、检测广告等）
+		go func(userID, accountID uint, email *models.Email) {
+			if _, err := s.processor.ProcessAndSaveEmail(userID, accountID, email); err != nil {
+				s.logService.LogWarn(userID, models.LogModuleEmail, "process_email", "Failed to process email", map[string]interface{}{
+					"email_id": email.ID,
+					"error":    err.Error(),
+				})
+			}
+		}(userID, accountID, email)
+
 		savedCount++
 	}
 
@@ -1389,6 +1402,16 @@ func (s *EmailService) SyncAndSaveEmailsNoLimit(userID, accountID uint) (int, er
 				})
 			}
 		}
+
+		// 处理邮件（提取验证码、检测广告等）
+		go func(userID, accountID uint, email *models.Email) {
+			if _, err := s.processor.ProcessAndSaveEmail(userID, accountID, email); err != nil {
+				s.logService.LogWarn(userID, models.LogModuleEmail, "process_email", "Failed to process email", map[string]interface{}{
+					"email_id": email.ID,
+					"error":    err.Error(),
+				})
+			}
+		}(userID, accountID, email)
 
 		savedCount++
 	}
