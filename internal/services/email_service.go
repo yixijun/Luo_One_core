@@ -2283,19 +2283,36 @@ func (s *EmailService) UploadAttachment(userID, emailID uint, filename string, c
 // DownloadAttachment downloads an attachment
 func (s *EmailService) DownloadAttachment(userID, emailID uint, filename string) ([]byte, error) {
 	// Verify user owns the email
-	_, err := s.GetEmailByIDAndUserID(emailID, userID)
+	email, err := s.GetEmailByIDAndUserID(emailID, userID)
 	if err != nil {
 		return nil, err
 	}
 
+	s.logService.LogInfo(userID, models.LogModuleEmail, "download_attachment", "Attempting to download attachment", map[string]interface{}{
+		"email_id":  emailID,
+		"filename":  filename,
+		"raw_path":  email.RawFilePath,
+	})
+
 	// Get attachment
 	content, err := s.userStorage.GetAttachment(userID, emailID, filename)
 	if err != nil {
+		s.logService.LogError(userID, models.LogModuleEmail, "download_attachment", "Failed to get attachment", map[string]interface{}{
+			"email_id": emailID,
+			"filename": filename,
+			"error":    err.Error(),
+		})
 		if errors.Is(err, user.ErrFileNotFound) {
 			return nil, ErrAttachmentNotFound
 		}
 		return nil, err
 	}
+
+	s.logService.LogInfo(userID, models.LogModuleEmail, "download_attachment", "Successfully downloaded attachment", map[string]interface{}{
+		"email_id": emailID,
+		"filename": filename,
+		"size":     len(content),
+	})
 
 	return content, nil
 }
