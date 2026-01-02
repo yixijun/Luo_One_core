@@ -2559,7 +2559,7 @@ func (s *EmailService) ParseAndSaveAttachments(userID, emailID uint) ([]Attachme
 	return result, nil
 }
 
-// ProcessAccountEmails processes all unprocessed emails for an account
+// ProcessAccountEmails processes all emails for an account (reprocesses even if already processed)
 // Returns the number of emails processed
 func (s *EmailService) ProcessAccountEmails(userID, accountID uint) (int, error) {
 	// Verify user owns the account
@@ -2568,18 +2568,15 @@ func (s *EmailService) ProcessAccountEmails(userID, accountID uint) (int, error)
 		return 0, err
 	}
 
-	// Get all emails without processed results
+	// Get all emails for this account
 	var emails []models.Email
-	if err := s.db.Where("account_id = ?", accountID).
-		Joins("LEFT JOIN processed_results ON processed_results.email_id = emails.id").
-		Where("processed_results.id IS NULL").
-		Find(&emails).Error; err != nil {
+	if err := s.db.Where("account_id = ?", accountID).Find(&emails).Error; err != nil {
 		return 0, err
 	}
 
-	s.logService.LogInfo(userID, models.LogModuleEmail, "process_account", "Starting batch processing", map[string]interface{}{
-		"account_id":    accountID,
-		"email_count":   len(emails),
+	s.logService.LogInfo(userID, models.LogModuleEmail, "process_account", "Starting batch processing (reprocess all)", map[string]interface{}{
+		"account_id":  accountID,
+		"email_count": len(emails),
 	})
 
 	processedCount := 0
