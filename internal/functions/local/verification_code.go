@@ -231,9 +231,28 @@ func ExtractAllVerificationCodes(content string) []string {
 
 // normalizeContent normalizes the content for better pattern matching
 func normalizeContent(content string) string {
+	// First, try to extract text from common verification code HTML patterns
+	// Look for large/prominent text that might contain the code
+	prominentTextPattern := regexp.MustCompile(`(?i)<(?:h[1-3]|strong|b|span[^>]*(?:font-size|large|big)[^>]*|div[^>]*(?:font-size|large|big)[^>]*)>([^<]{4,20})</`)
+	matches := prominentTextPattern.FindAllStringSubmatch(content, -1)
+	for _, match := range matches {
+		if len(match) >= 2 {
+			text := strings.TrimSpace(match[1])
+			// If this looks like a verification code, prioritize it
+			if regexp.MustCompile(`^[A-Za-z0-9]{4,8}$`).MatchString(text) {
+				// Prepend with marker so it gets higher priority
+				content = "验证码: " + text + " " + content
+			}
+		}
+	}
+
 	// Remove HTML tags if present
 	htmlTagPattern := regexp.MustCompile(`<[^>]*>`)
 	content = htmlTagPattern.ReplaceAllString(content, " ")
+
+	// Remove CSS style content
+	stylePattern := regexp.MustCompile(`(?i)(?:color|background|border|font|margin|padding)\s*:\s*#?[a-f0-9]{3,6}`)
+	content = stylePattern.ReplaceAllString(content, " ")
 
 	// Normalize whitespace
 	whitespacePattern := regexp.MustCompile(`\s+`)
@@ -297,5 +316,45 @@ func isValidCode(code string) bool {
 		}
 	}
 
+	// Reject hex color codes (6 chars, all hex digits, common color patterns)
+	if len(code) == 6 && isHexColorCode(lowerCode) {
+		return false
+	}
+
 	return true
+}
+
+// isHexColorCode checks if a string looks like a hex color code
+func isHexColorCode(code string) bool {
+	// Check if all characters are hex digits
+	for _, c := range code {
+		if !((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f')) {
+			return false
+		}
+	}
+
+	// Common color patterns to reject
+	colorPatterns := []string{
+		"ffffff", "000000", "f0f0f0", "e0e0e0", "d0d0d0", "c0c0c0",
+		"f6f6f6", "f5f5f5", "f4f4f4", "f3f3f3", "f2f2f2", "f1f1f1",
+		"eeeeee", "dddddd", "cccccc", "bbbbbb", "aaaaaa", "999999",
+		"888888", "777777", "666666", "555555", "444444", "333333",
+		"ff0000", "00ff00", "0000ff", "ffff00", "ff00ff", "00ffff",
+		"fafafa", "fbfbfb", "fcfcfc", "fdfdfd", "fefefe",
+	}
+	for _, pattern := range colorPatterns {
+		if code == pattern {
+			return true
+		}
+	}
+
+	// Check for repeated patterns like "ababab", "f6f6f6"
+	if len(code) == 6 {
+		if code[0] == code[2] && code[2] == code[4] &&
+			code[1] == code[3] && code[3] == code[5] {
+			return true
+		}
+	}
+
+	return false
 }
