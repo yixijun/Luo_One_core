@@ -265,14 +265,28 @@ func (s *EmailService) refreshOAuthToken(account *models.EmailAccount) (string, 
 
 // refreshGoogleToken refreshes a Google OAuth token
 func (s *EmailService) refreshGoogleToken(account *models.EmailAccount, refreshToken string) (string, error) {
-	// This requires the Google client credentials
-	// In production, these should be stored securely
+	// 首先尝试从数据库读取用户的 OAuth 配置
+	var settings models.UserSettings
+	if err := s.db.Where("user_id = ?", account.UserID).First(&settings).Error; err == nil {
+		// 从数据库获取配置
+		if settings.GoogleClientID != "" && settings.GoogleClientSecret != "" {
+			return s.doGoogleTokenRefresh(account, settings.GoogleClientID, settings.GoogleClientSecret, refreshToken)
+		}
+	}
+
+	// 回退到环境变量
 	clientID := os.Getenv("GOOGLE_CLIENT_ID")
 	clientSecret := os.Getenv("GOOGLE_CLIENT_SECRET")
 
 	if clientID == "" || clientSecret == "" {
 		return "", fmt.Errorf("Google OAuth credentials not configured")
 	}
+
+	return s.doGoogleTokenRefresh(account, clientID, clientSecret, refreshToken)
+}
+
+// doGoogleTokenRefresh performs the actual token refresh request
+func (s *EmailService) doGoogleTokenRefresh(account *models.EmailAccount, clientID, clientSecret, refreshToken string) (string, error) {
 
 	// Make token refresh request
 	resp, err := http.PostForm("https://oauth2.googleapis.com/token", map[string][]string{
