@@ -56,40 +56,44 @@ type UpdateAccountRequest struct {
 
 // AccountResponse represents the response for an email account
 type AccountResponse struct {
-	ID          uint   `json:"id"`
-	Email       string `json:"email"`
-	DisplayName string `json:"display_name"`
-	IMAPHost    string `json:"imap_host"`
-	IMAPPort    int    `json:"imap_port"`
-	SMTPHost    string `json:"smtp_host"`
-	SMTPPort    int    `json:"smtp_port"`
-	Username    string `json:"username"`
-	UseSSL      bool   `json:"use_ssl"`
-	Enabled     bool   `json:"enabled"`
-	SyncDays    int    `json:"sync_days"`
-	LastSyncAt  int64  `json:"last_sync_at"`
-	CreatedAt   int64  `json:"created_at"`
-	EmailCount  int64  `json:"email_count"`
+	ID            uint   `json:"id"`
+	Email         string `json:"email"`
+	DisplayName   string `json:"display_name"`
+	IMAPHost      string `json:"imap_host"`
+	IMAPPort      int    `json:"imap_port"`
+	SMTPHost      string `json:"smtp_host"`
+	SMTPPort      int    `json:"smtp_port"`
+	Username      string `json:"username"`
+	UseSSL        bool   `json:"use_ssl"`
+	Enabled       bool   `json:"enabled"`
+	SyncDays      int    `json:"sync_days"`
+	LastSyncAt    int64  `json:"last_sync_at"`
+	CreatedAt     int64  `json:"created_at"`
+	EmailCount    int64  `json:"email_count"`
+	AuthType      string `json:"auth_type"`
+	OAuthProvider string `json:"oauth_provider"`
 }
 
 
 // toAccountResponse converts an EmailAccount model to AccountResponse
 func toAccountResponse(account *models.EmailAccount, emailCount int64) AccountResponse {
 	return AccountResponse{
-		ID:          account.ID,
-		Email:       account.Email,
-		DisplayName: account.DisplayName,
-		IMAPHost:    account.IMAPHost,
-		IMAPPort:    account.IMAPPort,
-		SMTPHost:    account.SMTPHost,
-		SMTPPort:    account.SMTPPort,
-		Username:    account.Username,
-		UseSSL:      account.UseSSL,
-		Enabled:     account.Enabled,
-		SyncDays:    account.SyncDays,
-		LastSyncAt:  account.LastSyncAt.Unix(),
-		CreatedAt:   account.CreatedAt.Unix(),
-		EmailCount:  emailCount,
+		ID:            account.ID,
+		Email:         account.Email,
+		DisplayName:   account.DisplayName,
+		IMAPHost:      account.IMAPHost,
+		IMAPPort:      account.IMAPPort,
+		SMTPHost:      account.SMTPHost,
+		SMTPPort:      account.SMTPPort,
+		Username:      account.Username,
+		UseSSL:        account.UseSSL,
+		Enabled:       account.Enabled,
+		SyncDays:      account.SyncDays,
+		LastSyncAt:    account.LastSyncAt.Unix(),
+		CreatedAt:     account.CreatedAt.Unix(),
+		EmailCount:    emailCount,
+		AuthType:      string(account.AuthType),
+		OAuthProvider: account.OAuthProvider,
 	}
 }
 
