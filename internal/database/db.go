@@ -56,6 +56,19 @@ func runMigrations(db *gorm.DB) error {
 
 	// 确保 EmailAccount 的 OAuth 字段存在
 	if db.Migrator().HasTable(&models.EmailAccount{}) {
+		// 检查是否存在旧的 GORM 自动命名列（o_auth_*），如果存在则迁移数据
+		var hasOldColumns bool
+		var colInfo []struct {
+			Name string `gorm:"column:name"`
+		}
+		db.Raw("PRAGMA table_info(email_accounts)").Scan(&colInfo)
+		for _, col := range colInfo {
+			if col.Name == "o_auth_access_token" {
+				hasOldColumns = true
+				break
+			}
+		}
+		
 		// 使用原生 SQL 添加列（SQLite 兼容）
 		oauthColumns := []struct {
 			name string
@@ -69,15 +82,35 @@ func runMigrations(db *gorm.DB) error {
 		}
 		
 		for _, col := range oauthColumns {
-			if !db.Migrator().HasColumn(&models.EmailAccount{}, col.name) {
+			// 检查列是否已存在
+			var exists bool
+			for _, c := range colInfo {
+				if c.Name == col.name {
+					exists = true
+					break
+				}
+			}
+			if !exists {
 				sql := fmt.Sprintf("ALTER TABLE email_accounts ADD COLUMN %s %s", col.name, col.def)
 				if err := db.Exec(sql).Error; err != nil {
 					// 忽略 "duplicate column" 错误
 					if !strings.Contains(err.Error(), "duplicate column") {
 						log.Printf("[Migration] Warning: Failed to add column %s: %v", col.name, err)
 					}
+				} else {
+					log.Printf("[Migration] Added column %s to email_accounts", col.name)
 				}
 			}
+		}
+		
+		// 如果存在旧列，迁移数据到新列
+		if hasOldColumns {
+			log.Printf("[Migration] Found old GORM column names (o_auth_*), migrating data...")
+			db.Exec("UPDATE email_accounts SET oauth_access_token = o_auth_access_token WHERE oauth_access_token IS NULL OR oauth_access_token = ''")
+			db.Exec("UPDATE email_accounts SET oauth_refresh_token = o_auth_refresh_token WHERE oauth_refresh_token IS NULL OR oauth_refresh_token = ''")
+			db.Exec("UPDATE email_accounts SET oauth_token_expiry = o_auth_token_expiry WHERE oauth_token_expiry IS NULL")
+			db.Exec("UPDATE email_accounts SET oauth_provider = o_auth_provider WHERE oauth_provider IS NULL OR oauth_provider = ''")
+			log.Printf("[Migration] Data migration from old columns completed")
 		}
 		
 		// 修复旧数据：如果有 oauth_refresh_token 但 auth_type 为空，设置为 oauth2

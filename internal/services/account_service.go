@@ -10,6 +10,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"time"
 
 	"github.com/luo-one/core/internal/database/models"
 	"gorm.io/gorm"
@@ -613,14 +614,17 @@ func (s *AccountService) GetDecryptedOAuthTokens(account *models.EmailAccount) (
 
 // UpdateOAuthTokens updates the OAuth tokens for an account
 func (s *AccountService) UpdateOAuthTokens(accountID uint, accessToken, refreshToken string, expiry interface{}) error {
-	updates := make(map[string]interface{})
+	// 使用结构体更新，让 GORM 使用模型中定义的列名
+	account := &models.EmailAccount{}
+	var selectFields []string
 
 	if accessToken != "" {
 		encryptedAccess, err := s.encryptPassword(accessToken)
 		if err != nil {
 			return err
 		}
-		updates["oauth_access_token"] = encryptedAccess
+		account.OAuthAccessToken = encryptedAccess
+		selectFields = append(selectFields, "OAuthAccessToken")
 	}
 
 	if refreshToken != "" {
@@ -628,12 +632,20 @@ func (s *AccountService) UpdateOAuthTokens(accountID uint, accessToken, refreshT
 		if err != nil {
 			return err
 		}
-		updates["oauth_refresh_token"] = encryptedRefresh
+		account.OAuthRefreshToken = encryptedRefresh
+		selectFields = append(selectFields, "OAuthRefreshToken")
 	}
 
 	if expiry != nil {
-		updates["oauth_token_expiry"] = expiry
+		if t, ok := expiry.(time.Time); ok {
+			account.OAuthTokenExpiry = t
+			selectFields = append(selectFields, "OAuthTokenExpiry")
+		}
 	}
 
-	return s.db.Model(&models.EmailAccount{}).Where("id = ?", accountID).Updates(updates).Error
+	if len(selectFields) == 0 {
+		return nil
+	}
+
+	return s.db.Model(&models.EmailAccount{}).Where("id = ?", accountID).Select(selectFields).Updates(account).Error
 }
