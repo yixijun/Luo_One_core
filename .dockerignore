@@ -1,0 +1,31 @@
+# Git
+.git
+.gitignore
+
+# IDE
+.vscode
+.idea
+*.swp
+*.swo
+
+# 构建产物
+*.exe
+*.dll
+*.so
+*.dylib
+
+# 测试
+*_test.go
+*.test
+
+# 数据文件
+data/
+*.db
+*.sqlite
+
+# 日志
+*.log
+
+# 临时文件
+tmp/
+temp/
