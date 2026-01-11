@@ -327,6 +327,142 @@ func (h *OAuthHandler) cleanupOldStates() {
 	}
 }
 
+// RefreshGoogleToken manually refreshes the OAuth token for a Google account
+// POST /api/oauth/google/refresh/:id
+func (h *OAuthHandler) RefreshGoogleToken(c *gin.Context) {
+	userID, exists := middleware.GetUserIDFromContext(c)
+	if !exists {
+		c.JSON(http.StatusUnauthorized, gin.H{
+			"success": false,
+			"error": gin.H{
+				"code":    "AUTH_FAILED",
+				"message": "User not authenticated",
+			},
+		})
+		return
+	}
+
+	accountID := c.Param("id")
+	if accountID == "" {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"success": false,
+			"error": gin.H{
+				"code":    "INVALID_PARAMS",
+				"message": "Account ID is required",
+			},
+		})
+		return
+	}
+
+	// Parse account ID
+	var accountIDUint uint
+	if _, err := fmt.Sscanf(accountID, "%d", &accountIDUint); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"success": false,
+			"error": gin.H{
+				"code":    "INVALID_PARAMS",
+				"message": "Invalid account ID",
+			},
+		})
+		return
+	}
+
+	// Get account
+	account, err := h.accountService.GetAccountByIDAndUserID(accountIDUint, userID)
+	if err != nil {
+		c.JSON(http.StatusNotFound, gin.H{
+			"success": false,
+			"error": gin.H{
+				"code":    "ACCOUNT_NOT_FOUND",
+				"message": "Account not found",
+			},
+		})
+		return
+	}
+
+	// Check if it's a Google OAuth account
+	if account.AuthType != models.AuthTypeOAuth2 || account.OAuthProvider != "google" {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"success": false,
+			"error": gin.H{
+				"code":    "NOT_OAUTH_ACCOUNT",
+				"message": "This account is not a Google OAuth account",
+			},
+		})
+		return
+	}
+
+	// Get refresh token
+	_, refreshToken, err := h.accountService.GetDecryptedOAuthTokens(account)
+	if err != nil || refreshToken == "" {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"success": false,
+			"error": gin.H{
+				"code":    "NO_REFRESH_TOKEN",
+				"message": "No refresh token available. Please re-authorize the account.",
+			},
+		})
+		return
+	}
+
+	// Get OAuth config
+	config, err := h.getGoogleOAuthConfigForUser(userID)
+	if err != nil || config.ClientID == "" || config.ClientSecret == "" {
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"success": false,
+			"error": gin.H{
+				"code":    "OAUTH_NOT_CONFIGURED",
+				"message": "Google OAuth not configured",
+			},
+		})
+		return
+	}
+
+	// Refresh token
+	tokenSource := config.TokenSource(context.Background(), &oauth2.Token{
+		RefreshToken: refreshToken,
+	})
+	newToken, err := tokenSource.Token()
+	if err != nil {
+		log.Printf("[OAuth] Failed to refresh token for account %s: %v", accountID, err)
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"success": false,
+			"error": gin.H{
+				"code":    "REFRESH_FAILED",
+				"message": fmt.Sprintf("Failed to refresh token: %v", err),
+			},
+		})
+		return
+	}
+
+	// Update tokens in database
+	newRefreshToken := newToken.RefreshToken
+	if newRefreshToken == "" {
+		newRefreshToken = refreshToken // Keep old refresh token if not returned
+	}
+	err = h.accountService.UpdateOAuthTokens(account.ID, newToken.AccessToken, newRefreshToken, newToken.Expiry)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"success": false,
+			"error": gin.H{
+				"code":    "UPDATE_FAILED",
+				"message": "Failed to save new tokens",
+			},
+		})
+		return
+	}
+
+	log.Printf("[OAuth] Successfully refreshed token for account %s, expires at %v", accountID, newToken.Expiry)
+
+	c.JSON(http.StatusOK, gin.H{
+		"success": true,
+		"data": gin.H{
+			"message":    "Token refreshed successfully",
+			"expires_at": newToken.Expiry,
+		},
+	})
+}
+
 // GetOAuthConfig returns the OAuth configuration status
 // GET /api/oauth/config
 func (h *OAuthHandler) GetOAuthConfig(c *gin.Context) {

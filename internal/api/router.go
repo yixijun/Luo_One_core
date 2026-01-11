@@ -147,6 +147,7 @@ func SetupRouter(db *gorm.DB, cfg *config.Config) (*gin.Engine, *middleware.Auth
 			{
 				oauthProtected.GET("/config", oauthHandler.GetOAuthConfig)
 				oauthProtected.GET("/google/auth", oauthHandler.GetGoogleAuthURL)
+				oauthProtected.POST("/google/refresh/:id", oauthHandler.RefreshGoogleToken)
 			}
 		}
 	}
