@@ -51,6 +51,25 @@ func runMigrations(db *gorm.DB) error {
 		return err
 	}
 
+	// 确保 EmailAccount 的 OAuth 字段存在
+	if db.Migrator().HasTable(&models.EmailAccount{}) {
+		if !db.Migrator().HasColumn(&models.EmailAccount{}, "auth_type") {
+			db.Migrator().AddColumn(&models.EmailAccount{}, "auth_type")
+		}
+		if !db.Migrator().HasColumn(&models.EmailAccount{}, "oauth_provider") {
+			db.Migrator().AddColumn(&models.EmailAccount{}, "oauth_provider")
+		}
+		if !db.Migrator().HasColumn(&models.EmailAccount{}, "oauth_access_token") {
+			db.Migrator().AddColumn(&models.EmailAccount{}, "oauth_access_token")
+		}
+		if !db.Migrator().HasColumn(&models.EmailAccount{}, "oauth_refresh_token") {
+			db.Migrator().AddColumn(&models.EmailAccount{}, "oauth_refresh_token")
+		}
+		if !db.Migrator().HasColumn(&models.EmailAccount{}, "oauth_token_expiry") {
+			db.Migrator().AddColumn(&models.EmailAccount{}, "oauth_token_expiry")
+		}
+	}
+
 	// 确保 Google OAuth 字段存在（GORM AutoMigrate 应该会自动添加，但为了安全起见）
 	if db.Migrator().HasTable(&models.UserSettings{}) {
 		if !db.Migrator().HasColumn(&models.UserSettings{}, "google_client_id") {
