@@ -49,6 +49,10 @@ func SetupRouter(db *gorm.DB, cfg *config.Config) (*gin.Engine, *middleware.Auth
 	syncScheduler := services.NewSyncScheduler(db, emailService, logService, 2*time.Minute)
 	syncScheduler.Start()
 
+	// Start token scheduler (auto refresh tokens every 5 minutes)
+	tokenScheduler := services.NewTokenScheduler(db, emailService, 5*time.Minute)
+	tokenScheduler.Start()
+
 	// Initialize handlers
 	authHandler := handlers.NewAuthHandler(userService, authManager.JWTManager, logService)
 	userHandler := handlers.NewUserHandler(userService, logService)

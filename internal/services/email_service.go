@@ -188,13 +188,16 @@ func (s *EmailService) connectIMAP(account *models.EmailAccount) (*client.Client
 			return nil, fmt.Errorf("%w: failed to get OAuth tokens: %v", ErrIMAPConnectionFailed, err)
 		}
 
-		// Check if token needs refresh
-		if account.OAuthTokenExpiry.Before(time.Now()) {
+		// Check if token needs refresh (refresh 5 minutes before expiry)
+		refreshThreshold := time.Now().Add(5 * time.Minute)
+		if account.OAuthTokenExpiry.Before(refreshThreshold) {
+			log.Printf("[OAuth] Token for %s expires at %v, refreshing...", account.Email, account.OAuthTokenExpiry)
 			accessToken, err = s.refreshOAuthToken(account)
 			if err != nil {
 				c.Logout()
 				return nil, fmt.Errorf("%w: failed to refresh OAuth token: %v", ErrIMAPConnectionFailed, err)
 			}
+			log.Printf("[OAuth] Token refreshed successfully for %s", account.Email)
 		}
 
 		// XOAUTH2 authentication
