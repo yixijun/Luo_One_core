@@ -37,19 +37,20 @@ WORKDIR /app
 COPY --from=builder /app/luo_one_core .
 
 # 创建数据目录
-RUN mkdir -p /app/data
+RUN mkdir -p /app/data /app/data/users /app/emails
 
 # 设置环境变量
 ENV LUO_ONE_DATA_DIR=/app/data
 ENV LUO_ONE_DATABASE_PATH=/app/data/luo_one.db
+ENV LUO_ONE_EMAILS_DIR=/app/emails
 ENV LUO_ONE_API_PORT=8080
 ENV LUO_ONE_LOG_LEVEL=INFO
 
 # 暴露端口
 EXPOSE 8080
 
-# 数据卷
-VOLUME ["/app/data"]
+# 数据卷 - 分离数据库和邮件存储
+VOLUME ["/app/data", "/app/emails"]
 
 # 启动命令
 CMD ["./luo_one_core"]
