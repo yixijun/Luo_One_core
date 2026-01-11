@@ -1,8 +1,11 @@
 package database
 
 import (
+	"fmt"
+	"log"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/luo-one/core/internal/database/models"
 	"gorm.io/driver/sqlite"
@@ -53,29 +56,32 @@ func runMigrations(db *gorm.DB) error {
 
 	// 确保 EmailAccount 的 OAuth 字段存在
 	if db.Migrator().HasTable(&models.EmailAccount{}) {
-		if !db.Migrator().HasColumn(&models.EmailAccount{}, "auth_type") {
-			db.Migrator().AddColumn(&models.EmailAccount{}, "auth_type")
+		// 使用原生 SQL 添加列（SQLite 兼容）
+		oauthColumns := []struct {
+			name string
+			def  string
+		}{
+			{"auth_type", "TEXT DEFAULT 'password'"},
+			{"oauth_provider", "TEXT DEFAULT ''"},
+			{"oauth_access_token", "TEXT DEFAULT ''"},
+			{"oauth_refresh_token", "TEXT DEFAULT ''"},
+			{"oauth_token_expiry", "DATETIME"},
 		}
-		if !db.Migrator().HasColumn(&models.EmailAccount{}, "oauth_provider") {
-			db.Migrator().AddColumn(&models.EmailAccount{}, "oauth_provider")
-		}
-		if !db.Migrator().HasColumn(&models.EmailAccount{}, "oauth_access_token") {
-			db.Migrator().AddColumn(&models.EmailAccount{}, "oauth_access_token")
-		}
-		if !db.Migrator().HasColumn(&models.EmailAccount{}, "oauth_refresh_token") {
-			db.Migrator().AddColumn(&models.EmailAccount{}, "oauth_refresh_token")
-		}
-		if !db.Migrator().HasColumn(&models.EmailAccount{}, "oauth_token_expiry") {
-			db.Migrator().AddColumn(&models.EmailAccount{}, "oauth_token_expiry")
+		
+		for _, col := range oauthColumns {
+			if !db.Migrator().HasColumn(&models.EmailAccount{}, col.name) {
+				sql := fmt.Sprintf("ALTER TABLE email_accounts ADD COLUMN %s %s", col.name, col.def)
+				if err := db.Exec(sql).Error; err != nil {
+					// 忽略 "duplicate column" 错误
+					if !strings.Contains(err.Error(), "duplicate column") {
+						log.Printf("[Migration] Warning: Failed to add column %s: %v", col.name, err)
+					}
+				}
+			}
 		}
 		
 		// 修复旧数据：如果有 oauth_refresh_token 但 auth_type 为空，设置为 oauth2
-		db.Model(&models.EmailAccount{}).
-			Where("oauth_refresh_token IS NOT NULL AND oauth_refresh_token != '' AND (auth_type IS NULL OR auth_type = '' OR auth_type = 'password')").
-			Updates(map[string]interface{}{
-				"auth_type":      "oauth2",
-				"oauth_provider": "google",
-			})
+		db.Exec("UPDATE email_accounts SET auth_type = 'oauth2', oauth_provider = 'google' WHERE oauth_refresh_token IS NOT NULL AND oauth_refresh_token != '' AND (auth_type IS NULL OR auth_type = '' OR auth_type = 'password')")
 	}
 
 	// 确保 Google OAuth 字段存在（GORM AutoMigrate 应该会自动添加，但为了安全起见）
