@@ -68,6 +68,14 @@ func runMigrations(db *gorm.DB) error {
 		if !db.Migrator().HasColumn(&models.EmailAccount{}, "oauth_token_expiry") {
 			db.Migrator().AddColumn(&models.EmailAccount{}, "oauth_token_expiry")
 		}
+		
+		// 修复旧数据：如果有 oauth_refresh_token 但 auth_type 为空，设置为 oauth2
+		db.Model(&models.EmailAccount{}).
+			Where("oauth_refresh_token IS NOT NULL AND oauth_refresh_token != '' AND (auth_type IS NULL OR auth_type = '' OR auth_type = 'password')").
+			Updates(map[string]interface{}{
+				"auth_type":      "oauth2",
+				"oauth_provider": "google",
+			})
 	}
 
 	// 确保 Google OAuth 字段存在（GORM AutoMigrate 应该会自动添加，但为了安全起见）
