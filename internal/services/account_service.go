@@ -187,7 +187,7 @@ func (s *AccountService) GetAccountByIDAndUserID(id, userID uint) (*models.Email
 // GetAccountsByUserID retrieves all email accounts for a user
 func (s *AccountService) GetAccountsByUserID(userID uint) ([]models.EmailAccount, error) {
 	var accounts []models.EmailAccount
-	if err := s.db.Where("user_id = ?", userID).Find(&accounts).Error; err != nil {
+	if err := s.db.Where("user_id = ?", userID).Order("sort_order ASC, id ASC").Find(&accounts).Error; err != nil {
 		return nil, err
 	}
 	return accounts, nil

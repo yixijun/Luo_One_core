@@ -67,6 +67,7 @@ type AccountResponse struct {
 	UseSSL        bool   `json:"use_ssl"`
 	Enabled       bool   `json:"enabled"`
 	SyncDays      int    `json:"sync_days"`
+	SortOrder     int    `json:"sort_order"`
 	LastSyncAt    int64  `json:"last_sync_at"`
 	CreatedAt     int64  `json:"created_at"`
 	EmailCount    int64  `json:"email_count"`
@@ -89,6 +90,7 @@ func toAccountResponse(account *models.EmailAccount, emailCount int64) AccountRe
 		UseSSL:        account.UseSSL,
 		Enabled:       account.Enabled,
 		SyncDays:      account.SyncDays,
+		SortOrder:     account.SortOrder,
 		LastSyncAt:    account.LastSyncAt.Unix(),
 		CreatedAt:     account.CreatedAt.Unix(),
 		EmailCount:    emailCount,
@@ -636,5 +638,61 @@ func (h *AccountHandler) DisableAccount(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{
 		"success": true,
 		"data":    toAccountResponse(account, emailCount),
+	})
+}
+
+
+// ReorderAccountsRequest represents the request to reorder accounts
+type ReorderAccountsRequest struct {
+	AccountIDs []uint `json:"account_ids" binding:"required"`
+}
+
+// ReorderAccounts updates the sort order of accounts
+// PUT /api/accounts/reorder
+func (h *AccountHandler) ReorderAccounts(c *gin.Context) {
+	userID, exists := middleware.GetUserIDFromContext(c)
+	if !exists {
+		c.JSON(http.StatusUnauthorized, gin.H{
+			"success": false,
+			"error": gin.H{
+				"code":    "AUTH_FAILED",
+				"message": "User not authenticated",
+			},
+		})
+		return
+	}
+
+	var req ReorderAccountsRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"success": false,
+			"error": gin.H{
+				"code":    "VALIDATION_ERROR",
+				"message": "Invalid request body",
+				"details": err.Error(),
+			},
+		})
+		return
+	}
+
+	// 更新每个账户的排序顺序
+	for i, accountID := range req.AccountIDs {
+		if err := h.db.Model(&models.EmailAccount{}).
+			Where("id = ? AND user_id = ?", accountID, userID).
+			Update("sort_order", i).Error; err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{
+				"success": false,
+				"error": gin.H{
+					"code":    "INTERNAL_ERROR",
+					"message": "Failed to update account order",
+				},
+			})
+			return
+		}
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"success": true,
+		"message": "Account order updated successfully",
 	})
 }

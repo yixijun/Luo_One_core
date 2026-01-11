@@ -27,6 +27,7 @@ type EmailAccount struct {
 	UseSSL            bool      `gorm:"default:true" json:"use_ssl"`
 	Enabled           bool      `gorm:"default:true" json:"enabled"`
 	SyncDays          int       `gorm:"default:-1" json:"sync_days"` // Days to sync: -1=all, 0=incremental, >0=specific days
+	SortOrder         int       `gorm:"default:0" json:"sort_order"` // 排序顺序，数字越小越靠前
 	LastSyncAt        time.Time `json:"last_sync_at"`
 	CreatedAt         time.Time `json:"created_at"`
 	UpdatedAt         time.Time `json:"updated_at"`

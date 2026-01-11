@@ -106,6 +106,7 @@ func SetupRouter(db *gorm.DB, cfg *config.Config) (*gin.Engine, *middleware.Auth
 				accounts.GET("", accountHandler.ListAccounts)
 				accounts.POST("", accountHandler.CreateAccount)
 				accounts.POST("/test", accountHandler.TestConnectionDirect) // Test without saving (must be before /:id routes)
+				accounts.PUT("/reorder", accountHandler.ReorderAccounts)    // Reorder accounts (must be before /:id routes)
 				accounts.GET("/:id", accountHandler.GetAccount)
 				accounts.PUT("/:id", accountHandler.UpdateAccount)
 				accounts.DELETE("/:id", accountHandler.DeleteAccount)
