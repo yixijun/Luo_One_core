@@ -32,11 +32,11 @@ type EmailAccount struct {
 	UpdatedAt         time.Time `json:"updated_at"`
 
 	// OAuth 2.0 fields
-	AuthType              AuthType  `gorm:"size:20;default:'password'" json:"auth_type"`
-	OAuthProvider         string    `gorm:"size:50" json:"oauth_provider,omitempty"`          // google, microsoft, etc.
-	OAuthAccessToken      string    `gorm:"size:2000" json:"-"`                               // Encrypted access token
-	OAuthRefreshToken     string    `gorm:"size:2000" json:"-"`                               // Encrypted refresh token
-	OAuthTokenExpiry      time.Time `json:"oauth_token_expiry,omitempty"`                     // Token expiry time
+	AuthType          AuthType  `gorm:"column:auth_type;size:20;default:'password'" json:"auth_type"`
+	OAuthProvider     string    `gorm:"column:oauth_provider;size:50" json:"oauth_provider,omitempty"`
+	OAuthAccessToken  string    `gorm:"column:oauth_access_token;size:2000" json:"-"`
+	OAuthRefreshToken string    `gorm:"column:oauth_refresh_token;size:2000" json:"-"`
+	OAuthTokenExpiry  time.Time `gorm:"column:oauth_token_expiry" json:"oauth_token_expiry,omitempty"`
 
 	// Relations
 	Emails []Email `gorm:"foreignKey:AccountID" json:"emails,omitempty"`
