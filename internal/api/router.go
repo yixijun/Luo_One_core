@@ -1,6 +1,7 @@
 package api
 
 import (
+	"strings"
 	"time"
 
 	"github.com/gin-contrib/cors"
@@ -17,15 +18,29 @@ import (
 func SetupRouter(db *gorm.DB, cfg *config.Config) (*gin.Engine, *middleware.AuthManager, error) {
 	router := gin.Default()
 
-	// 配置 CORS - 允许跨域请求
-	router.Use(cors.New(cors.Config{
-		AllowOrigins:     []string{"*"},
-		AllowMethods:     []string{"GET", "POST", "PUT", "DELETE", "OPTIONS"},
-		AllowHeaders:     []string{"Origin", "Content-Type", "Authorization", "X-API-Key"},
-		ExposeHeaders:    []string{"Content-Length"},
-		AllowCredentials: true,
-		MaxAge:           12 * time.Hour,
-	}))
+	// 配置 CORS
+	corsConfig := cors.Config{
+		AllowMethods:  []string{"GET", "POST", "PUT", "DELETE", "OPTIONS"},
+		AllowHeaders:  []string{"Origin", "Content-Type", "Authorization", "X-API-Key"},
+		ExposeHeaders: []string{"Content-Length"},
+		MaxAge:        12 * time.Hour,
+	}
+
+	// 解析 CORS 允许的域名
+	if cfg.CORSOrigins == "*" {
+		// 允许所有域名时，不能同时使用 AllowCredentials
+		corsConfig.AllowAllOrigins = true
+		corsConfig.AllowCredentials = false
+	} else {
+		// 指定具体域名
+		origins := strings.Split(cfg.CORSOrigins, ",")
+		for i := range origins {
+			origins[i] = strings.TrimSpace(origins[i])
+		}
+		corsConfig.AllowOrigins = origins
+		corsConfig.AllowCredentials = true
+	}
+	router.Use(cors.New(corsConfig))
 
 	// Initialize auth manager
 	authManager, err := middleware.NewAuthManager(cfg.DataDir, cfg.JWTSecret, middleware.DefaultTokenExpiry)
@@ -45,10 +60,13 @@ func SetupRouter(db *gorm.DB, cfg *config.Config) (*gin.Engine, *middleware.Auth
 	userService := services.NewUserService(db, userManager)
 	logService := services.NewLogServiceWithLevel(db, cfg.LogLevel)
 
-	// Create encryption key from JWT secret for account service
-	encryptionKey := []byte(cfg.JWTSecret)
+	// 使用独立的加密密钥（从配置获取，支持向后兼容）
+	encryptionKey := cfg.GetEncryptionKey()
 	accountService := services.NewAccountService(db, encryptionKey)
-	emailService := services.NewEmailService(db, accountService, userManager)
+	emailService := services.NewEmailServiceWithConfig(db, accountService, userManager, cfg)
+
+	// 设置邮件目录获取器，确保删除账户时使用正确的路径
+	accountService.SetEmailsDirGetter(emailService)
 
 	// Start sync scheduler (auto sync every 2 minutes)
 	syncScheduler := services.NewSyncScheduler(db, emailService, logService, 2*time.Minute)
@@ -66,9 +84,14 @@ func SetupRouter(db *gorm.DB, cfg *config.Config) (*gin.Engine, *middleware.Auth
 	settingsHandler := handlers.NewSettingsHandler(userService, logService)
 	oauthHandler := handlers.NewOAuthHandler(accountService, userService)
 
-	// Health check endpoint (no auth required)
+	// Health check endpoint with database status
 	router.GET("/health", func(c *gin.Context) {
-		c.JSON(200, gin.H{"status": "ok"})
+		sqlDB, err := db.DB()
+		if err != nil || sqlDB.Ping() != nil {
+			c.JSON(503, gin.H{"status": "unhealthy", "db": "disconnected"})
+			return
+		}
+		c.JSON(200, gin.H{"status": "ok", "db": "connected"})
 	})
 
 	// OAuth callback - must be outside API key middleware (Google redirects here without API key)

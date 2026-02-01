@@ -1,40 +1,28 @@
 # 洛一后端 - 问题与优化建议
 
-## 🔴 严重问题
+## ✅ 已修复
 
 ### 1. CORS 配置过于宽松
 **文件**: `internal/api/router.go`
-```go
-AllowOrigins: []string{"*"},
-AllowCredentials: true,
-```
-**问题**: `AllowOrigins: *` 与 `AllowCredentials: true` 同时使用存在安全风险，浏览器会拒绝此配置。
-**建议**: 生产环境应指定具体的允许域名。
+**修复**: 现在根据 `CORSOrigins` 配置动态设置，当为 `*` 时禁用 `AllowCredentials`。
 
 ### 2. 删除账户时文件路径硬编码
 **文件**: `internal/services/account_service.go`
-```go
-baseDir := "data/users"
-```
-**问题**: 删除账户时使用硬编码路径，不会使用配置的 `EmailsDir`。
-**建议**: 注入 `userManager` 或 `config` 来获取正确的路径。
+**修复**: 添加 `EmailsDirGetter` 接口，通过 `getEmailsBaseDir()` 获取正确路径。
 
 ### 3. 密码加密密钥来源不安全
-**文件**: `internal/api/router.go`
-```go
-encryptionKey := []byte(cfg.JWTSecret)
-```
-**问题**: 使用 JWT Secret 作为 AES 加密密钥，如果 JWT Secret 泄露，所有邮箱密码都会暴露。
-**建议**: 使用独立的加密密钥，并通过环境变量配置。
-
-## 🟡 中等问题
+**文件**: `internal/config/config.go`
+**修复**: 添加独立的 `EncryptionKey` 配置，通过 `GetEncryptionKey()` 获取（支持向后兼容）。
 
 ### 4. 缺少数据库索引
 **文件**: `internal/database/models/email.go`
-**问题**: 
-- `Email.Body` 和 `Email.HTMLBody` 没有全文索引，搜索效率低
-- 缺少 `(account_id, date)` 复合索引，按时间排序查询慢
-**建议**: 添加必要的索引或考虑使用全文搜索引擎。
+**修复**: 添加 `(account_id, date)` 复合索引、`from_addr` 索引、`is_read` 索引。
+
+### 5. 健康检查增强
+**文件**: `internal/api/router.go`
+**修复**: 健康检查现在包含数据库连接状态。
+
+## 🟡 中等问题（待处理）
 
 ### 5. 同步调度器没有优雅关闭
 **文件**: `internal/services/sync_scheduler.go`
@@ -51,7 +39,7 @@ encryptionKey := []byte(cfg.JWTSecret)
 **问题**: IMAP 连接失败时直接返回错误，没有重试逻辑。
 **建议**: 添加指数退避重试机制。
 
-## 🟢 优化建议
+## 🟢 优化建议（待处理）
 
 ### 8. 日志级别配置
 **现状**: 日志级别通过配置文件设置，但很多地方直接使用 `log.Printf`。
@@ -74,25 +62,13 @@ sqlDB.SetConnMaxLifetime(time.Hour)
 **问题**: 没有限制附件大小，可能导致内存溢出。
 **建议**: 添加附件大小限制配置。
 
-### 12. 健康检查增强
-**文件**: `internal/api/router.go`
-**建议**: 健康检查应包含数据库连接状态：
-```go
-router.GET("/health", func(c *gin.Context) {
-    if err := db.Exec("SELECT 1").Error; err != nil {
-        c.JSON(503, gin.H{"status": "unhealthy", "db": "disconnected"})
-        return
-    }
-    c.JSON(200, gin.H{"status": "ok", "db": "connected"})
-})
-```
-
 ## 📋 待办事项
 
-- [ ] 修复 CORS 配置
-- [ ] 修复删除账户时的文件路径问题
-- [ ] 添加独立的加密密钥配置
-- [ ] 添加数据库索引
+- [x] 修复 CORS 配置
+- [x] 修复删除账户时的文件路径问题
+- [x] 添加独立的加密密钥配置
+- [x] 添加数据库索引
+- [x] 增强健康检查
 - [ ] 实现优雅关闭
 - [ ] 添加 Token 刷新锁
 - [ ] 添加邮件同步重试机制
@@ -100,4 +76,3 @@ router.GET("/health", func(c *gin.Context) {
 - [ ] 配置数据库连接池
 - [ ] 统一 API 响应格式
 - [ ] 添加附件大小限制
-- [ ] 增强健康检查

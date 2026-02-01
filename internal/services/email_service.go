@@ -95,6 +95,7 @@ type EmailService struct {
 	userStorage    *user.Storage
 	logService     *LogService
 	processor      *functions.Processor
+	emailsDir      string // 邮件存储目录（用于删除账户时清理文件）
 }
 
 // NewEmailService creates a new EmailService instance
@@ -106,7 +107,29 @@ func NewEmailService(db *gorm.DB, accountService *AccountService, userManager *u
 		userStorage:    user.NewStorage(userManager),
 		logService:     NewLogService(db),
 		processor:      functions.NewProcessor(db, userManager),
+		emailsDir:      "", // 使用默认路径
 	}
+}
+
+// NewEmailServiceWithConfig creates a new EmailService instance with config
+func NewEmailServiceWithConfig(db *gorm.DB, accountService *AccountService, userManager *user.Manager, cfg interface{ GetEmailsBaseDir() string }) *EmailService {
+	return &EmailService{
+		db:             db,
+		accountService: accountService,
+		userManager:    userManager,
+		userStorage:    user.NewStorage(userManager),
+		logService:     NewLogService(db),
+		processor:      functions.NewProcessor(db, userManager),
+		emailsDir:      cfg.GetEmailsBaseDir(),
+	}
+}
+
+// GetEmailsBaseDir returns the base directory for email storage
+func (s *EmailService) GetEmailsBaseDir() string {
+	if s.emailsDir != "" {
+		return s.emailsDir
+	}
+	return s.userManager.GetDataDir()
 }
 
 

@@ -29,11 +29,17 @@ var (
 	ErrDecryptionFailed = errors.New("password decryption failed")
 )
 
+// EmailsDirGetter interface for getting emails directory
+type EmailsDirGetter interface {
+	GetEmailsBaseDir() string
+}
+
 // AccountService handles email account-related business logic
 type AccountService struct {
 	db            *gorm.DB
 	encryptionKey []byte // 32 bytes for AES-256
 	logService    *LogService
+	emailsDirGetter EmailsDirGetter // 用于获取邮件存储目录
 }
 
 // NewAccountService creates a new AccountService instance
@@ -46,6 +52,19 @@ func NewAccountService(db *gorm.DB, encryptionKey []byte) *AccountService {
 		encryptionKey: key,
 		logService:    NewLogService(db),
 	}
+}
+
+// SetEmailsDirGetter sets the emails directory getter
+func (s *AccountService) SetEmailsDirGetter(getter EmailsDirGetter) {
+	s.emailsDirGetter = getter
+}
+
+// getEmailsBaseDir returns the base directory for email storage
+func (s *AccountService) getEmailsBaseDir() string {
+	if s.emailsDirGetter != nil {
+		return s.emailsDirGetter.GetEmailsBaseDir()
+	}
+	return "data/users" // 默认路径（向后兼容）
 }
 
 // encryptPassword encrypts a password using AES-256-GCM
@@ -339,10 +358,10 @@ func (s *AccountService) DeleteAccount(id, userID uint) error {
 	}
 
 	// 5. 删除文件系统中的账户数据目录
-	// 目录结构: data/users/{userID}/raw_emails/{accountID}
-	//          data/users/{userID}/processed_emails/{accountID}
-	//          data/users/{userID}/attachments/{emailID} (每个邮件的附件)
-	baseDir := "data/users"
+	// 目录结构: {baseDir}/{userID}/raw_emails/{accountID}
+	//          {baseDir}/{userID}/processed_emails/{accountID}
+	//          {baseDir}/{userID}/attachments/{emailID} (每个邮件的附件)
+	baseDir := s.getEmailsBaseDir()
 	userDir := filepath.Join(baseDir, fmt.Sprintf("%d", userID))
 	
 	// 删除原始邮件目录
