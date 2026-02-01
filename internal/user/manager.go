@@ -19,14 +19,33 @@ var (
 
 // Manager handles user data directory management
 type Manager struct {
-	dataDir string
+	dataDir   string // 数据目录（配置、数据库等）
+	emailsDir string // 邮件存储目录（可独立配置）
 }
 
 // NewManager creates a new user Manager instance
+// emailsDir 为空时，邮件存储在 dataDir/users 下
 func NewManager(dataDir string) *Manager {
 	return &Manager{
-		dataDir: dataDir,
+		dataDir:   dataDir,
+		emailsDir: "", // 默认使用 dataDir/users
 	}
+}
+
+// NewManagerWithEmailsDir creates a new user Manager with separate emails directory
+func NewManagerWithEmailsDir(dataDir, emailsDir string) *Manager {
+	return &Manager{
+		dataDir:   dataDir,
+		emailsDir: emailsDir,
+	}
+}
+
+// getEmailsBaseDir returns the base directory for email storage
+func (m *Manager) getEmailsBaseDir() string {
+	if m.emailsDir != "" {
+		return m.emailsDir
+	}
+	return filepath.Join(m.dataDir, "users")
 }
 
 // GetUserDataDir returns the base data directory for a specific user
@@ -34,7 +53,7 @@ func (m *Manager) GetUserDataDir(userID uint) (string, error) {
 	if userID == 0 {
 		return "", ErrInvalidUserID
 	}
-	return filepath.Join(m.dataDir, "users", fmt.Sprintf("%d", userID)), nil
+	return filepath.Join(m.getEmailsBaseDir(), fmt.Sprintf("%d", userID)), nil
 }
 
 // GetRawEmailsDir returns the raw emails directory for a user
@@ -98,11 +117,14 @@ func (m *Manager) CreateUserDirectories(userID uint) error {
 		return ErrInvalidUserID
 	}
 
+	baseDir := m.getEmailsBaseDir()
+	userDir := filepath.Join(baseDir, fmt.Sprintf("%d", userID))
+
 	dirs := []string{
-		filepath.Join(m.dataDir, "users", fmt.Sprintf("%d", userID)),
-		filepath.Join(m.dataDir, "users", fmt.Sprintf("%d", userID), "raw_emails"),
-		filepath.Join(m.dataDir, "users", fmt.Sprintf("%d", userID), "processed_emails"),
-		filepath.Join(m.dataDir, "users", fmt.Sprintf("%d", userID), "attachments"),
+		userDir,
+		filepath.Join(userDir, "raw_emails"),
+		filepath.Join(userDir, "processed_emails"),
+		filepath.Join(userDir, "attachments"),
 	}
 
 	for _, dir := range dirs {

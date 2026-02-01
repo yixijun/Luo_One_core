@@ -33,8 +33,13 @@ func SetupRouter(db *gorm.DB, cfg *config.Config) (*gin.Engine, *middleware.Auth
 		return nil, nil, err
 	}
 
-	// Initialize user manager
-	userManager := user.NewManager(cfg.DataDir)
+	// Initialize user manager with separate emails directory if configured
+	var userManager *user.Manager
+	if cfg.EmailsDir != "" {
+		userManager = user.NewManagerWithEmailsDir(cfg.DataDir, cfg.EmailsDir)
+	} else {
+		userManager = user.NewManager(cfg.DataDir)
+	}
 
 	// Initialize services
 	userService := services.NewUserService(db, userManager)

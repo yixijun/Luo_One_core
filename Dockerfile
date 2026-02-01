@@ -37,7 +37,7 @@ WORKDIR /app
 COPY --from=builder /app/luo_one_core .
 
 # 创建数据目录
-RUN mkdir -p /app/data /app/data/users /app/emails
+RUN mkdir -p /app/data /app/emails
 
 # 设置环境变量
 ENV LUO_ONE_DATA_DIR=/app/data

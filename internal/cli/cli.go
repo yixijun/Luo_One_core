@@ -76,8 +76,13 @@ func Execute(database *gorm.DB, config *config.Config) {
 		os.Exit(1)
 	}
 
-	// Initialize user manager and service
-	userManager := user.NewManager(cfg.DataDir)
+	// Initialize user manager with separate emails directory if configured
+	var userManager *user.Manager
+	if cfg.EmailsDir != "" {
+		userManager = user.NewManagerWithEmailsDir(cfg.DataDir, cfg.EmailsDir)
+	} else {
+		userManager = user.NewManager(cfg.DataDir)
+	}
 	userService = services.NewUserService(db, userManager)
 
 	if err := rootCmd.Execute(); err != nil {

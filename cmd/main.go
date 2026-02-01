@@ -3,7 +3,6 @@ package main
 import (
 	"log"
 	"os"
-	"path/filepath"
 
 	"github.com/luo-one/core/internal/api"
 	"github.com/luo-one/core/internal/cli"
@@ -19,7 +18,7 @@ func main() {
 	}
 
 	// Ensure data directory exists
-	if err := ensureDataDir(cfg.DataDir); err != nil {
+	if err := ensureDataDir(cfg); err != nil {
 		log.Fatalf("Failed to create data directory: %v", err)
 	}
 
@@ -43,6 +42,9 @@ func main() {
 
 	log.Printf("Starting Luo One server on port %s", cfg.APIPort)
 	log.Printf("Data directory: %s", cfg.DataDir)
+	if cfg.EmailsDir != "" {
+		log.Printf("Emails directory: %s", cfg.EmailsDir)
+	}
 	log.Printf("Database path: %s", cfg.DatabasePath)
 	log.Printf("API Key: %s", authManager.APIKeyManager.GetCurrentKey())
 	if err := router.Run(":" + cfg.APIPort); err != nil {
@@ -51,11 +53,16 @@ func main() {
 }
 
 // ensureDataDir creates the data directory and subdirectories if they don't exist
-func ensureDataDir(dataDir string) error {
+func ensureDataDir(cfg *config.Config) error {
+	// Create data directory
 	dirs := []string{
-		dataDir,
-		filepath.Join(dataDir, "users"),
+		cfg.DataDir,
 	}
+	
+	// Create emails directory (separate or under data dir)
+	emailsBaseDir := cfg.GetEmailsBaseDir()
+	dirs = append(dirs, emailsBaseDir)
+	
 	for _, dir := range dirs {
 		if err := os.MkdirAll(dir, 0755); err != nil {
 			return err

@@ -12,6 +12,7 @@ type Config struct {
 	APIPort      string `json:"api_port"`
 	LogLevel     string `json:"log_level"`
 	DataDir      string `json:"data_dir"`
+	EmailsDir    string `json:"emails_dir"` // 邮件存储目录（独立于数据目录）
 	JWTSecret    string `json:"jwt_secret"`
 }
 
@@ -21,6 +22,7 @@ const (
 	DefaultAPIPort      = "8080"
 	DefaultLogLevel     = "INFO"
 	DefaultDataDir      = "data"
+	DefaultEmailsDir    = "" // 空表示使用 DataDir/users
 	DefaultJWTSecret    = "luo-one-default-secret-change-in-production"
 )
 
@@ -32,6 +34,7 @@ func Load() (*Config, error) {
 		APIPort:      DefaultAPIPort,
 		LogLevel:     DefaultLogLevel,
 		DataDir:      DefaultDataDir,
+		EmailsDir:    DefaultEmailsDir,
 		JWTSecret:    DefaultJWTSecret,
 	}
 
@@ -84,9 +87,21 @@ func (c *Config) loadFromEnv() {
 	if val := os.Getenv("LUO_ONE_DATA_DIR"); val != "" {
 		c.DataDir = val
 	}
+	if val := os.Getenv("LUO_ONE_EMAILS_DIR"); val != "" {
+		c.EmailsDir = val
+	}
 	if val := os.Getenv("LUO_ONE_JWT_SECRET"); val != "" {
 		c.JWTSecret = val
 	}
+}
+
+// GetEmailsBaseDir returns the base directory for email storage
+// If EmailsDir is set, use it; otherwise use DataDir/users
+func (c *Config) GetEmailsBaseDir() string {
+	if c.EmailsDir != "" {
+		return c.EmailsDir
+	}
+	return filepath.Join(c.DataDir, "users")
 }
 
 // Save saves the current configuration to a file
