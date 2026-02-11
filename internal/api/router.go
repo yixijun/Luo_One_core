@@ -9,6 +9,7 @@ import (
 	"github.com/luo-one/core/internal/api/handlers"
 	"github.com/luo-one/core/internal/api/middleware"
 	"github.com/luo-one/core/internal/config"
+	"github.com/luo-one/core/internal/database/models"
 	"github.com/luo-one/core/internal/services"
 	"github.com/luo-one/core/internal/user"
 	"gorm.io/gorm"
@@ -68,8 +69,15 @@ func SetupRouter(db *gorm.DB, cfg *config.Config) (*gin.Engine, *middleware.Auth
 	// 设置邮件目录获取器，确保删除账户时使用正确的路径
 	accountService.SetEmailsDirGetter(emailService)
 
-	// Start sync scheduler (auto sync every 2 minutes)
-	syncScheduler := services.NewSyncScheduler(db, emailService, logService, 2*time.Minute)
+	// 从用户设置加载同步间隔（取第一个用户的设置，单用户系统）
+	syncInterval := 2 * time.Minute // 默认 2 分钟
+	var firstSettings models.UserSettings
+	if err := db.First(&firstSettings).Error; err == nil && firstSettings.SyncInterval > 0 {
+		syncInterval = time.Duration(firstSettings.SyncInterval) * time.Second
+	}
+
+	// Start sync scheduler
+	syncScheduler := services.NewSyncScheduler(db, emailService, logService, syncInterval)
 	syncScheduler.Start()
 
 	// Start token scheduler (auto refresh tokens every 5 minutes)
@@ -81,7 +89,7 @@ func SetupRouter(db *gorm.DB, cfg *config.Config) (*gin.Engine, *middleware.Auth
 	userHandler := handlers.NewUserHandler(userService, logService)
 	accountHandler := handlers.NewAccountHandler(accountService, logService, db)
 	emailHandler := handlers.NewEmailHandler(emailService, logService)
-	settingsHandler := handlers.NewSettingsHandler(userService, logService)
+	settingsHandler := handlers.NewSettingsHandler(userService, logService, syncScheduler)
 	oauthHandler := handlers.NewOAuthHandler(accountService, userService)
 
 	// Health check endpoint with database status

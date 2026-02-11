@@ -3,6 +3,7 @@ package handlers
 import (
 	"log"
 	"net/http"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/luo-one/core/internal/api/middleware"
@@ -13,15 +14,17 @@ import (
 
 // SettingsHandler handles user settings related requests
 type SettingsHandler struct {
-	userService *services.UserService
-	logService  *services.LogService
+	userService   *services.UserService
+	logService    *services.LogService
+	syncScheduler *services.SyncScheduler
 }
 
 // NewSettingsHandler creates a new SettingsHandler instance
-func NewSettingsHandler(userService *services.UserService, logService *services.LogService) *SettingsHandler {
+func NewSettingsHandler(userService *services.UserService, logService *services.LogService, syncScheduler *services.SyncScheduler) *SettingsHandler {
 	return &SettingsHandler{
-		userService: userService,
-		logService:  logService,
+		userService:   userService,
+		logService:    logService,
+		syncScheduler: syncScheduler,
 	}
 }
 
@@ -57,6 +60,9 @@ type UserSettingsResponse struct {
 	// 主题和字体配置
 	Theme string `json:"theme"`
 	Font  string `json:"font"`
+
+	// 自动同步间隔（秒）
+	SyncInterval int `json:"sync_interval"`
 }
 
 // UpdateSettingsRequest represents the request to update user settings
@@ -91,6 +97,9 @@ type UpdateSettingsRequest struct {
 	// 主题和字体配置
 	Theme *string `json:"theme"`
 	Font  *string `json:"font"`
+
+	// 自动同步间隔（秒）
+	SyncInterval *int `json:"sync_interval"`
 }
 
 // toSettingsResponse converts UserSettings model to UserSettingsResponse
@@ -126,6 +135,7 @@ func toSettingsResponse(settings *models.UserSettings) UserSettingsResponse {
 		GoogleRedirectURL:     settings.GoogleRedirectURL,
 		Theme:                 theme,
 		Font:                  font,
+		SyncInterval:          settings.SyncInterval,
 	}
 }
 
@@ -294,6 +304,16 @@ func (h *SettingsHandler) UpdateSettings(c *gin.Context) {
 	if req.Font != nil {
 		settings.Font = *req.Font
 	}
+	if req.SyncInterval != nil {
+		v := *req.SyncInterval
+		if v < 30 {
+			v = 30 // 最小 30 秒
+		}
+		if v > 86400 {
+			v = 86400 // 最大 1 天
+		}
+		settings.SyncInterval = v
+	}
 
 	// Save updated settings
 	err = h.userService.UpdateUserSettings(userID, settings)
@@ -310,6 +330,11 @@ func (h *SettingsHandler) UpdateSettings(c *gin.Context) {
 	}
 
 	log.Printf("[Settings] UpdateSettings: Settings saved successfully for userID %d", userID)
+
+	// 如果同步间隔被更新，通知调度器
+	if req.SyncInterval != nil && h.syncScheduler != nil {
+		h.syncScheduler.UpdateInterval(time.Duration(settings.SyncInterval) * time.Second)
+	}
 
 	// Log settings update
 	h.logService.LogInfo(userID, models.LogModuleAuth, "settings_update", "User settings updated", map[string]interface{}{

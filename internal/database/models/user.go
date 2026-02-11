@@ -53,4 +53,7 @@ type UserSettings struct {
 	// 主题和字体配置
 	Theme string `gorm:"size:50;default:'dark'" json:"theme"`
 	Font  string `gorm:"size:50;default:'system'" json:"font"`
+
+	// 自动同步间隔（秒），0 表示使用默认值 120 秒
+	SyncInterval int `gorm:"default:120" json:"sync_interval"`
 }

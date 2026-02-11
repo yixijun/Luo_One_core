@@ -101,6 +101,34 @@ func (s *SyncScheduler) UnlockAccount(accountID uint) {
 	s.accountLocks.Delete(accountID)
 }
 
+// UpdateInterval 动态更新同步间隔
+func (s *SyncScheduler) UpdateInterval(newInterval time.Duration) {
+	if newInterval < 30*time.Second {
+		newInterval = 30 * time.Second
+	}
+	s.mu.Lock()
+	s.interval = newInterval
+	s.mu.Unlock()
+
+	// 重启调度器以应用新间隔
+	if s.running {
+		s.Stop()
+		// 重新初始化 stopChan
+		s.mu.Lock()
+		s.stopChan = make(chan struct{})
+		s.mu.Unlock()
+		s.Start()
+	}
+	log.Printf("[SyncScheduler] Interval updated to %v", newInterval)
+}
+
+// GetInterval 获取当前同步间隔
+func (s *SyncScheduler) GetInterval() time.Duration {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.interval
+}
+
 // syncAllAccounts syncs all enabled accounts
 func (s *SyncScheduler) syncAllAccounts() {
 	// 防止同步周期重叠：如果上一轮还没结束，跳过本轮
