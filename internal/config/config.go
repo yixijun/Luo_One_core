@@ -118,16 +118,15 @@ func (c *Config) GetEmailsBaseDir() string {
 }
 
 // GetEncryptionKey returns the encryption key for password encryption
-// If EncryptionKey is set, use it; otherwise derive from JWTSecret
+// If EncryptionKey is set, use it; otherwise use JWTSecret directly (backward compatible with original code)
 func (c *Config) GetEncryptionKey() []byte {
 	if c.EncryptionKey != "" {
 		// 使用 SHA-256 确保密钥长度为 32 字节
 		hash := sha256.Sum256([]byte(c.EncryptionKey))
 		return hash[:]
 	}
-	// 从 JWTSecret 派生（向后兼容）
-	hash := sha256.Sum256([]byte(c.JWTSecret + "-encryption"))
-	return hash[:]
+	// 直接使用 JWTSecret 的原始字节（向后兼容旧版本 []byte(cfg.JWTSecret)）
+	return []byte(c.JWTSecret)
 }
 
 // Save saves the current configuration to a file
