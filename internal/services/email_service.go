@@ -2082,15 +2082,38 @@ func (s *EmailService) buildEmailContent(account *models.EmailAccount, req SendE
 	return buf.String()
 }
 
+// extractEmailAddress extracts a bare email address from a string that may
+// contain a display name, e.g. "John <john@example.com>" -> "john@example.com"
+func extractEmailAddress(addr string) string {
+	addr = strings.TrimSpace(addr)
+	if addr == "" {
+		return ""
+	}
+	// Try parsing as RFC 5322 address (handles "Name <email>" format)
+	parsed, err := mail.ParseAddress(addr)
+	if err == nil {
+		return parsed.Address
+	}
+	// Fallback: if it looks like a bare email, return as-is
+	if strings.Contains(addr, "@") {
+		return addr
+	}
+	return ""
+}
+
 // sendViaSMTP sends the email via SMTP
 func (s *EmailService) sendViaSMTP(account *models.EmailAccount, password string, req SendEmailRequest, content string) error {
 	addr := fmt.Sprintf("%s:%d", account.SMTPHost, account.SMTPPort)
 
-	// Collect all recipients
+	// Collect all recipients and extract pure email addresses
+	// SMTP RCPT TO requires bare email addresses, not "Name <email>" format
 	var recipients []string
-	recipients = append(recipients, req.To...)
-	recipients = append(recipients, req.Cc...)
-	recipients = append(recipients, req.Bcc...)
+	for _, addr := range append(append(req.To, req.Cc...), req.Bcc...) {
+		email := extractEmailAddress(addr)
+		if email != "" {
+			recipients = append(recipients, email)
+		}
+	}
 
 	// Determine auth method based on host
 	// QQ Mail, 163 Mail, and other Chinese providers require LOGIN auth
