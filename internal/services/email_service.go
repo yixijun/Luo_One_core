@@ -1786,6 +1786,16 @@ func (s *EmailService) MarkEmailAsRead(id, userID uint) error {
 	return s.db.Model(email).Update("is_read", true).Error
 }
 
+// MarkEmailAsUnread marks an email as unread
+func (s *EmailService) MarkEmailAsUnread(id, userID uint) error {
+	email, err := s.GetEmailByIDAndUserID(id, userID)
+	if err != nil {
+		return err
+	}
+
+	return s.db.Model(email).Update("is_read", false).Error
+}
+
 // MarkAllAsRead marks all emails as read for a user (optionally filtered by account)
 func (s *EmailService) MarkAllAsRead(userID uint, accountID uint) (int64, error) {
 	// 先获取用户的所有账户 ID
