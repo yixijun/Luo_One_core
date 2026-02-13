@@ -1,0 +1,43 @@
+# Luo One Core Docker Compose 配置
+# 后端 API 服务
+
+services:
+  luo-one-core:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: luo-one-core
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    volumes:
+      # 数据库和配置
+      - luo-one-data:/app/data
+      # 邮件存储
+      - luo-one-emails:/app/emails
+    environment:
+      - LUO_ONE_DATA_DIR=/app/data
+      - LUO_ONE_DATABASE_PATH=/app/data/luo_one.db
+      - LUO_ONE_EMAILS_DIR=/app/emails
+      - LUO_ONE_API_PORT=8080
+      - LUO_ONE_LOG_LEVEL=${LOG_LEVEL:-INFO}
+      - LUO_ONE_JWT_SECRET=${JWT_SECRET}
+      - LUO_ONE_ENCRYPTION_KEY=${ENCRYPTION_KEY}
+      - LUO_ONE_CORS_ORIGINS=${CORS_ORIGINS:-*}
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost:8080/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+
+networks:
+  default:
+    name: luo-one-network
+    driver: bridge
+
+volumes:
+  luo-one-data:
+    driver: local
+  luo-one-emails:
+    driver: local
