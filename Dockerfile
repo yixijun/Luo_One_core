@@ -19,8 +19,8 @@ RUN go mod download
 COPY . .
 
 # 构建二进制文件
-# CGO_ENABLED=1 是 SQLite 需要的
-RUN CGO_ENABLED=1 GOOS=linux go build -a -ldflags '-linkmode external -extldflags "-static"' -o luo_one_core ./cmd/main.go
+# 移除静态链接以加快构建速度（Alpine 兼容）
+RUN CGO_ENABLED=1 GOOS=linux go build -o luo_one_core ./cmd/main.go
 
 # ============ 运行阶段 ============
 FROM alpine:3.19
